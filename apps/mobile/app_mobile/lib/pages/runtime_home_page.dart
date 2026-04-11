@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
-import '../data/test_definitions.dart ';
+import '../data/test_definitions.dart';
 import '../models/sensor_sample.dart';
 import '../services/runtime_api_service.dart';
 import '../services/sensor_recorder.dart';
@@ -22,7 +22,7 @@ class RuntimeHomePage extends StatefulWidget {
 }
 
 class _RuntimeHomePageState extends State<RuntimeHomePage> {
-  static const String _baseUrl = 'http://127.0.0.1:8000';
+static const String _baseUrl = 'http://192.168.1.50:8000';
 
   static const Color _accent = Color(0xFFC14953); // buttons / selected tab
   static const Color _accentDark = Color(0xFFA53B45);
@@ -56,7 +56,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
   String _selectedPlacement = 'pocket';
   String _selectedTestId = kTestDefinitions.first.id;
-  int _selectedSection = 0; // 0 monitor, 1 session, 2 checks
+  int _selectedSection = 1; // 0 monitor, 1 session, 2 checks
 
   String? _savedSessionsDirPath;
   String? _savedSessionsDirError;
