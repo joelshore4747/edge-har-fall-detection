@@ -232,43 +232,50 @@ static const String _baseUrl = 'http://192.168.1.50:8000';
   }
 
   Future<void> _stopRecording() async {
-    try {
-      await _recorder.stop();
+  final selectedTest = _selectedTest;
 
-      final path = await _recorder.saveSessionLocally(
-        subjectId: _normalisedSubjectId(),
-        placement: _normalisedPlacement(),
-      );
+  try {
+    await _recorder.stop();
 
-      await _refreshSavedSessionsPath();
-      if (!mounted) return;
-      setState(() {
-        if (path == null) {
-          _status = 'Recording stopped. No samples saved.';
-          _recordSaveOutcome(
-            outcome: _SaveOutcome.skipped,
-            status: 'No samples were available to save.',
-          );
-        } else {
-          _status = 'Recording stopped. Saved locally at $path';
-          _recordSaveOutcome(
-            outcome: _SaveOutcome.success,
-            status: 'Saved session to disk.',
-            savedPath: path,
-          );
-        }
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _status = 'Failed to stop recording: $e';
+    final path = await _recorder.saveSessionLocally(
+      subjectId: _normalisedSubjectId(),
+      placement: _normalisedPlacement(),
+      testId: selectedTest.id,
+      testTitle: selectedTest.title,
+      extraNotes: selectedTest.instructions,
+    );
+
+    await _refreshSavedSessionsPath();
+    if (!mounted) return;
+
+    setState(() {
+      if (path == null) {
+        _status = 'Recording stopped for ${selectedTest.title}. No samples saved.';
         _recordSaveOutcome(
-          outcome: _SaveOutcome.failed,
-          status: 'Save failed: $e',
+          outcome: _SaveOutcome.skipped,
+          status: 'No samples were available to save for ${selectedTest.title}.',
         );
-      });
-    }
+      } else {
+        _status =
+            'Recording stopped for ${selectedTest.title}. Saved locally at $path';
+        _recordSaveOutcome(
+          outcome: _SaveOutcome.success,
+          status: 'Saved ${selectedTest.title} session to disk.',
+          savedPath: path,
+        );
+      }
+    });
+  } catch (e) {
+    if (!mounted) return;
+    setState(() {
+      _status = 'Failed to stop recording for ${selectedTest.title}: $e';
+      _recordSaveOutcome(
+        outcome: _SaveOutcome.failed,
+        status: 'Save failed for ${selectedTest.title}: $e',
+      );
+    });
   }
+}
 
   Future<void> _sendForInference() async {
     if (_recorder.samples.isEmpty) {
