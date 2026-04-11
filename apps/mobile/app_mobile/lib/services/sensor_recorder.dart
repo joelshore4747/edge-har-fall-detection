@@ -240,28 +240,44 @@ class SensorRecorderService {
   }
 
   Future<String?> saveSessionLocally({
-    required String subjectId,
-    required String placement,
-  }) async {
-    final started = _recordingStartedAtUtc;
-    final sessionId = started == null
-        ? 'session_${DateTime.now().millisecondsSinceEpoch}'
-        : 'session_${started.millisecondsSinceEpoch}';
+  required String subjectId,
+  required String placement,
+  String? testId,
+  String? testTitle,
+  String? extraNotes,
+}) async {
+  final started = _recordingStartedAtUtc;
+  final sessionId = started == null
+      ? 'session_${DateTime.now().millisecondsSinceEpoch}'
+      : 'session_${started.millisecondsSinceEpoch}';
 
-    return _storage.saveSession(
-      sessionId: sessionId,
-      subjectId: subjectId,
-      placement: placement,
-      datasetName: 'APP_RUNTIME',
-      sourceType: supportsLiveSensors ? 'mobile_app' : 'debug',
-      devicePlatform: _platformValue(),
-      deviceModel: _deviceModelValue(),
-      recordingMode: supportsLiveSensors ? 'live_capture' : 'demo',
-      runtimeMode: supportsLiveSensors ? 'mobile_live' : 'desktop_demo',
-      samples: _samples.map((s) => s.toJson()).toList(growable: false),
-    );
-  }
+  final noteParts = <String>[
+    if (testId != null && testId.trim().isNotEmpty) 'test_id=${testId.trim()}',
+    if (testTitle != null && testTitle.trim().isNotEmpty)
+      'test_title=${testTitle.trim()}',
+    if (durationSeconds != null)
+      'duration_seconds=${durationSeconds!.toStringAsFixed(3)}',
+    'sample_count=${_samples.length}',
+    if (estimatedSamplingRateHz != null)
+      'estimated_sampling_rate_hz=${estimatedSamplingRateHz!.toStringAsFixed(2)}',
+    if (extraNotes != null && extraNotes.trim().isNotEmpty) extraNotes.trim(),
+  ];
 
+  return _storage.saveSession(
+    sessionId: sessionId,
+    subjectId: subjectId,
+    placement: placement,
+    datasetName: 'APP_RUNTIME',
+    sourceType: supportsLiveSensors ? 'mobile_app' : 'debug',
+    devicePlatform: _platformValue(),
+    deviceModel: _deviceModelValue(),
+    recordingMode: supportsLiveSensors ? 'live_capture' : 'demo',
+    runtimeMode: supportsLiveSensors ? 'mobile_live' : 'desktop_demo',
+    samplingRateHz: estimatedSamplingRateHz,
+    notes: noteParts.join(' | '),
+    samples: _samples.map((s) => s.toJson()).toList(growable: false),
+  );
+}
   Future<void> dispose() async {
     await stop();
   }

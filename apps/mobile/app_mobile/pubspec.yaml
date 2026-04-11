@@ -1,4 +1,4 @@
-name: app_mobile
+name: flutter_app
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -30,12 +30,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.0.0
-  sensors_plus: ^latest
-  path_provider: ^latest
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  http: ^1.6.0
+  sensors_plus: ^7.0.0
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
@@ -58,6 +59,8 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/demo_session_phone1.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:
