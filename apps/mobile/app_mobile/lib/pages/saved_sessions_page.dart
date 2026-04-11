@@ -145,6 +145,24 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     }
   }
 
+  String? _testTitleFromNotes(SavedSession session) {
+    final notes = session.notes?.trim();
+    if (notes == null || notes.isEmpty) {
+      return null;
+    }
+
+    for (final part in notes.split(' | ')) {
+      if (part.startsWith('test_title=')) {
+        final value = part.substring('test_title='.length).trim();
+        if (value.isNotEmpty) {
+          return value;
+        }
+      }
+    }
+
+    return null;
+  }
+
   Widget _chip({
     required String label,
     required Color textColor,
@@ -442,6 +460,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     final hasPlacementLabel =
         session.placementLabel != null &&
         session.placementLabel!.trim().isNotEmpty;
+    final testTitle = _testTitleFromNotes(session);
 
     return InkWell(
       borderRadius: BorderRadius.circular(24),
@@ -563,6 +582,13 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
                     label: 'Placement label: ${session.placementLabel}',
                     textColor: _textPrimary,
                     background: _softBackground,
+                  ),
+                if (testTitle != null)
+                  _chip(
+                    label: testTitle,
+                    textColor: _accent,
+                    icon: Icons.assignment_outlined,
+                    background: _accent.withValues(alpha: 0.10),
                   ),
                 if (session.notes != null && session.notes!.trim().isNotEmpty)
                   _chip(
