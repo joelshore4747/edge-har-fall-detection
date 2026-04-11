@@ -22,13 +22,13 @@ class RuntimeHomePage extends StatefulWidget {
 }
 
 class _RuntimeHomePageState extends State<RuntimeHomePage> {
-static const String _baseUrl = 'http://192.168.1.50:8000';
 
-  static const Color _accent = Color(0xFFC14953); // buttons / selected tab
-  static const Color _accentDark = Color(0xFFA53B45);
+  static const String _baseUrl = 'http://192.168.1.50:8000';
+
+  static const Color _accent = Color(0xFFC14953);
   static const Color _pageBackground = Color(
     0xFF848FA5,
-  ); // whole app background
+  );
   static const Color _cardBackground = Color(0xFFF9FAFC);
   static const Color _softBackground = Color(0xFFF1F3F7);
   static const Color _border = Color(0xFFD8DEE8);
@@ -75,11 +75,11 @@ static const String _baseUrl = 'http://192.168.1.50:8000';
   ApiResultSummary? _result;
 
   @override
-  void initState() {
-    super.initState();
-    _checkHealth();
-    _refreshSavedSessionsPath();
-  }
+    void initState() {
+      super.initState();
+      _status = 'Ready for local recording.';
+      _refreshSavedSessionsPath();
+    }
 
   @override
   void dispose() {
@@ -116,10 +116,13 @@ static const String _baseUrl = 'http://192.168.1.50:8000';
   TestDefinition get _selectedTest =>
       kTestDefinitions.firstWhere((test) => test.id == _selectedTestId);
 
-  String _recordingStatusText() {
-    final test = _selectedTest;
-    return 'Ready to record: ${test.title}';
-  }
+    String _recordingStatusText() {
+      final test = _selectedTest;
+      if (_recorder.isRecording) {
+        return 'Recording: ${test.title}';
+      }
+      return 'Ready to record: ${test.title}';
+    }
 
   Future<void> _checkHealth() async {
     if (!mounted) return;
@@ -1005,16 +1008,16 @@ static const String _baseUrl = 'http://192.168.1.50:8000';
                         child: _uniformActionButton(
                           label: 'Run Demo Session',
                           icon: Icons.bolt_outlined,
-                          onPressed: (_isSending || isRecording)
-                              ? null
-                              : _sendBundledDemoSession,
+                          onPressed: (!_recorder.supportsLiveSensors && !_isSending && !isRecording)
+                              ? _sendBundledDemoSession
+                              : null,
                           primary: !liveSensorsSupported,
                         ),
                       ),
                       SizedBox(
                         width: width,
                         child: _uniformActionButton(
-                          label: _isSending ? 'Sending...' : 'Send to Server',
+                          label: _isSending ? 'Sending...' : 'Send Recording to Server',
                           icon: Icons.cloud_upload_outlined,
                           onPressed:
                               (_isSending ||
