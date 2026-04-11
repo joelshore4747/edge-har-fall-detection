@@ -30,7 +30,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
   final SessionStorageService _storage = SessionStorageService();
   final RuntimeApiService _api = RuntimeApiService(
-    baseUrl: 'http://127.0.0.1:8000',
+    baseUrl: 'http://192.168.1.50:8000',
   );
 
   static const List<String> _activityOptions = [
@@ -365,6 +365,34 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     final last = samples.last;
     if (last is! Map) return null;
     return _asDouble(last['timestamp']);
+  }
+
+  String? _preferredTestTitle() {
+    final savedTitle =
+        _trimmedText(_payload?['test_title']) ?? widget.session.testTitle;
+    if (savedTitle != null && savedTitle.isNotEmpty) {
+      return savedTitle;
+    }
+
+    return _testTitleFromNotes();
+  }
+
+  String? _testTitleFromNotes() {
+    final notes = _notesController.text.trim();
+    if (notes.isEmpty) {
+      return null;
+    }
+
+    for (final part in notes.split(' | ')) {
+      if (part.startsWith('test_title=')) {
+        final value = part.substring('test_title='.length).trim();
+        if (value.isNotEmpty) {
+          return value;
+        }
+      }
+    }
+
+    return null;
   }
 
   List<Map<String, dynamic>> _feedbackEntries() {
@@ -766,6 +794,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   Widget _buildSessionInfoCard() {
     final firstTs = _firstTimestamp();
     final lastTs = _lastTimestamp();
+    final testTitle = _preferredTestTitle();
 
     return _card(
       child: Column(
@@ -822,6 +851,15 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                       icon: Icons.phone_android_outlined,
                     ),
                   ),
+                  if (testTitle != null)
+                    SizedBox(
+                      width: width,
+                      child: _metricBox(
+                        label: 'Test',
+                        value: testTitle,
+                        icon: Icons.assignment_outlined,
+                      ),
+                    ),
                 ],
               );
             },
@@ -1533,6 +1571,19 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       ),
     );
   }
+}
+
+String? _trimmedText(dynamic value) {
+  if (value == null) {
+    return null;
+  }
+
+  final text = value.toString().trim();
+  if (text.isEmpty) {
+    return null;
+  }
+
+  return text;
 }
 
 double? _asDouble(dynamic value) {

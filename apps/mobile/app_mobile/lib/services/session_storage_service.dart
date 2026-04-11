@@ -8,7 +8,7 @@ import '../models/saved_session.dart';
 
 class SessionStorageService {
   static const String _sessionsFolderName = 'saved_sessions';
-  static const int _schemaVersion = 2;
+  static const int _schemaVersion = 3;
 
   void _log(String message) {
     if (kDebugMode) {
@@ -47,6 +47,8 @@ class SessionStorageService {
     String? recordingMode,
     String? runtimeMode,
     double? samplingRateHz,
+    String? testId,
+    String? testTitle,
     String? notes,
   }) async {
     if (samples.isEmpty) {
@@ -56,12 +58,16 @@ class SessionStorageService {
 
     final dir = await _getSessionsDirectory();
     final now = DateTime.now();
+    final resolvedTestId =
+        _cleanOptionalValue(testId) ??
+        _metadataValueFromNotes(notes, 'test_id');
+    final resolvedTestTitle =
+        _cleanOptionalValue(testTitle) ??
+        _metadataValueFromNotes(notes, 'test_title');
     final fileName = _buildReadableFileName(
       timestamp: now,
-      subjectId: subjectId,
-      placement: placement,
-      recordingMode: recordingMode,
-      datasetName: datasetName,
+      testId: resolvedTestId,
+      testTitle: resolvedTestTitle,
     );
     final file = await _uniqueFile(dir, fileName);
     _log('Saving session file to ${file.path}');
@@ -87,6 +93,8 @@ class SessionStorageService {
       'sampling_rate_hz': samplingRateHz,
       'activity_label': null,
       'placement_label': null,
+      'test_id': resolvedTestId,
+      'test_title': resolvedTestTitle,
       'notes': notes ?? '',
       'samples': samples,
       'feedback': <Map<String, dynamic>>[],
@@ -148,6 +156,8 @@ class SessionStorageService {
                 stat.modified,
             activityLabel: _asString(payload['activity_label']),
             placementLabel: _asString(payload['placement_label']),
+            testId: _resolvedSessionMetadata(payload, 'test_id'),
+            testTitle: _resolvedSessionMetadata(payload, 'test_title'),
             notes: _asString(payload['notes']),
           ),
         );
@@ -182,9 +192,20 @@ class SessionStorageService {
     required String notes,
   }) async {
     final payload = await loadSessionPayload(filePath);
+    final existingNotes = _asString(payload['notes']);
+    final resolvedTestId =
+        _cleanOptionalValue(_asString(payload['test_id'])) ??
+        _metadataValueFromNotes(notes, 'test_id') ??
+        _metadataValueFromNotes(existingNotes, 'test_id');
+    final resolvedTestTitle =
+        _cleanOptionalValue(_asString(payload['test_title'])) ??
+        _metadataValueFromNotes(notes, 'test_title') ??
+        _metadataValueFromNotes(existingNotes, 'test_title');
 
     payload['activity_label'] = activityLabel;
     payload['placement_label'] = placementLabel;
+    payload['test_id'] = resolvedTestId;
+    payload['test_title'] = resolvedTestTitle;
     payload['notes'] = notes;
     payload['updated_at'] = DateTime.now().toIso8601String();
 
@@ -256,6 +277,8 @@ class SessionStorageService {
     final placement = _normalisePlacement(
       _asString(payload['placement']) ?? 'unknown',
     );
+    final testId = _resolvedSessionMetadata(payload, 'test_id');
+    final testTitle = _resolvedSessionMetadata(payload, 'test_title');
 
     final metadata = <String, dynamic>{
       'session_id': sessionId,
@@ -273,6 +296,8 @@ class SessionStorageService {
       'recording_mode':
           _asString(payload['recording_mode']) ?? 'import_session',
       'runtime_mode': _asString(payload['runtime_mode']) ?? 'session_replay',
+      'test_id': testId,
+      'test_title': testTitle,
     };
 
     return <String, dynamic>{
@@ -297,22 +322,11 @@ class SessionStorageService {
 
   String _buildReadableFileName({
     required DateTime timestamp,
-    required String subjectId,
-    required String placement,
-    required String? recordingMode,
-    required String datasetName,
+    String? testId,
+    String? testTitle,
   }) {
-    final ts =
-        '${timestamp.year}-${timestamp.month.toString().padLeft(2, '0')}-${timestamp.day.toString().padLeft(2, '0')}_'
-        '${timestamp.hour.toString().padLeft(2, '0')}-${timestamp.minute.toString().padLeft(2, '0')}';
-
-    final subject = _slug(_fallback(subjectId, 'anonymous'));
-    final place = _slug(_fallback(placement, 'unknown'));
-    final mode = _slug(
-      _fallback(recordingMode, _inferModeFromDataset(datasetName)),
-    );
-
-    return '${ts}_${subject}_${place}_$mode.json';
+    final slug = _testSlug(testTitle: testTitle, testId: testId);
+    return 'session_${slug}_${timestamp.millisecondsSinceEpoch}.json';
   }
 
   Future<File> _uniqueFile(Directory dir, String fileName) async {
@@ -333,20 +347,67 @@ class SessionStorageService {
     return candidate;
   }
 
-  String _inferModeFromDataset(String datasetName) {
-    final lower = datasetName.toLowerCase();
-    if (lower.contains('demo')) {
-      return 'demo';
+  String _testSlug({String? testTitle, String? testId}) {
+    final cleanedTitle = _cleanOptionalValue(testTitle);
+    if (cleanedTitle != null) {
+      final withoutPrefix = cleanedTitle.replaceFirst(
+        RegExp(r'^\d+\s*[.):_/-]*\s*'),
+        '',
+      );
+      final withoutSuffix = withoutPrefix.replaceFirst(
+        RegExp(r'\s+test$', caseSensitive: false),
+        '',
+      );
+      final slug = _slug(withoutSuffix);
+      if (slug != 'unknown') {
+        return slug;
+      }
     }
-    if (lower.contains('saved')) {
-      return 'replay';
+
+    final cleanedId = _cleanOptionalValue(testId);
+    if (cleanedId != null) {
+      final slug = _slug(cleanedId);
+      if (slug != 'unknown') {
+        return slug;
+      }
     }
-    return 'live';
+
+    return 'unspecified';
   }
 
-  String _fallback(String? value, String fallback) {
-    final trimmed = value?.trim() ?? '';
-    return trimmed.isEmpty ? fallback : trimmed;
+  String? _resolvedSessionMetadata(
+    Map<String, dynamic> payload,
+    String fieldName,
+  ) {
+    final directValue = _cleanOptionalValue(_asString(payload[fieldName]));
+    if (directValue != null) {
+      return directValue;
+    }
+
+    return _metadataValueFromNotes(_asString(payload['notes']), fieldName);
+  }
+
+  String? _metadataValueFromNotes(String? notes, String fieldName) {
+    final trimmedNotes = _cleanOptionalValue(notes);
+    if (trimmedNotes == null) {
+      return null;
+    }
+
+    for (final part in trimmedNotes.split(' | ')) {
+      if (part.startsWith('$fieldName=')) {
+        return _cleanOptionalValue(part.substring(fieldName.length + 1));
+      }
+    }
+
+    return null;
+  }
+
+  String? _cleanOptionalValue(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
   }
 
   String _slug(String value) {

@@ -29,8 +29,7 @@ const List<TestDefinition> kTestDefinitions = [
   TestDefinition(
     id: 'slow_walk',
     title: '2. Slow Walk',
-    instructions:
-        'Walk slowly in a straight line for the full test duration.',
+    instructions: 'Walk slowly in a straight line for the full test duration.',
     suggestedDurationSeconds: 20,
     isFallRelated: false,
     safetyNote: 'Normal safe test.',
@@ -74,8 +73,7 @@ const List<TestDefinition> kTestDefinitions = [
   TestDefinition(
     id: 'stairs_up',
     title: '7. Walk Up Stairs',
-    instructions:
-        'Walk up a short flight of stairs at a normal pace.',
+    instructions: 'Walk up a short flight of stairs at a normal pace.',
     suggestedDurationSeconds: 15,
     isFallRelated: false,
     safetyNote: 'Hold the handrail if needed.',
@@ -83,8 +81,7 @@ const List<TestDefinition> kTestDefinitions = [
   TestDefinition(
     id: 'stairs_down',
     title: '8. Walk Down Stairs',
-    instructions:
-        'Walk down a short flight of stairs at a normal pace.',
+    instructions: 'Walk down a short flight of stairs at a normal pace.',
     suggestedDurationSeconds: 15,
     isFallRelated: false,
     safetyNote: 'Use extra caution and hold the handrail.',
@@ -105,6 +102,16 @@ const List<TestDefinition> kTestDefinitions = [
         'Only if safe: perform a carefully controlled fall-like motion onto a soft protected surface.',
     suggestedDurationSeconds: 10,
     isFallRelated: true,
-    safetyNote: 'Only do this with padding, supervision, and no real injury risk.',
+    safetyNote:
+        'Only do this with padding, supervision, and no real injury risk.',
+  ),
+  TestDefinition(
+    id: 'random_freeform',
+    title: '11. Random / Freeform Test',
+    instructions:
+        'Use this for any unscripted or mixed movement test that does not fit the standard predefined tests.',
+    suggestedDurationSeconds: 20,
+    isFallRelated: false,
+    safetyNote: 'Keep the movement controlled and safe.',
   ),
 ];

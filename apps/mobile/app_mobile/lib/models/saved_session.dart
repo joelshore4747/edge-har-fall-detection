@@ -11,6 +11,8 @@ class SavedSession {
     required this.savedAt,
     this.activityLabel,
     this.placementLabel,
+    this.testId,
+    this.testTitle,
     this.notes,
   });
 
@@ -22,6 +24,8 @@ class SavedSession {
   final DateTime savedAt;
   final String? activityLabel;
   final String? placementLabel;
+  final String? testId;
+  final String? testTitle;
   final String? notes;
 
   bool get hasActivityLabel =>
@@ -29,6 +33,10 @@ class SavedSession {
 
   bool get hasPlacementLabel =>
       placementLabel != null && placementLabel!.trim().isNotEmpty;
+
+  bool get hasTestId => testId != null && testId!.trim().isNotEmpty;
+
+  bool get hasTestTitle => testTitle != null && testTitle!.trim().isNotEmpty;
 
   bool get hasNotes => notes != null && notes!.trim().isNotEmpty;
 
@@ -43,9 +51,13 @@ class SavedSession {
     DateTime? savedAt,
     String? activityLabel,
     String? placementLabel,
+    String? testId,
+    String? testTitle,
     String? notes,
     bool clearActivityLabel = false,
     bool clearPlacementLabel = false,
+    bool clearTestId = false,
+    bool clearTestTitle = false,
     bool clearNotes = false,
   }) {
     return SavedSession(
@@ -61,6 +73,8 @@ class SavedSession {
       placementLabel: clearPlacementLabel
           ? null
           : (placementLabel ?? this.placementLabel),
+      testId: clearTestId ? null : (testId ?? this.testId),
+      testTitle: clearTestTitle ? null : (testTitle ?? this.testTitle),
       notes: clearNotes ? null : (notes ?? this.notes),
     );
   }
@@ -75,11 +89,15 @@ class SavedSession {
       'saved_at': savedAt.toUtc().toIso8601String(),
       'activity_label': activityLabel,
       'placement_label': placementLabel,
+      'test_id': testId,
+      'test_title': testTitle,
       'notes': notes,
     };
   }
 
   factory SavedSession.fromJson(Map<String, dynamic> json) {
+    final notes = _asNullableString(json['notes']);
+
     return SavedSession(
       filePath: (json['file_path'] ?? '').toString(),
       fileName: (json['file_name'] ?? '').toString(),
@@ -89,7 +107,13 @@ class SavedSession {
       savedAt: _asDateTime(json['saved_at']) ?? DateTime.now().toUtc(),
       activityLabel: _asNullableString(json['activity_label']),
       placementLabel: _asNullableString(json['placement_label']),
-      notes: _asNullableString(json['notes']),
+      testId:
+          _asNullableString(json['test_id']) ??
+          _metadataValueFromNotes(notes, 'test_id'),
+      testTitle:
+          _asNullableString(json['test_title']) ??
+          _metadataValueFromNotes(notes, 'test_title'),
+      notes: notes,
     );
   }
 
@@ -124,6 +148,24 @@ class SavedSession {
     return text.isEmpty ? null : text;
   }
 
+  static String? _metadataValueFromNotes(String? notes, String fieldName) {
+    final trimmedNotes = notes?.trim();
+    if (trimmedNotes == null || trimmedNotes.isEmpty) {
+      return null;
+    }
+
+    for (final part in trimmedNotes.split(' | ')) {
+      if (part.startsWith('$fieldName=')) {
+        final value = part.substring(fieldName.length + 1).trim();
+        if (value.isNotEmpty) {
+          return value;
+        }
+      }
+    }
+
+    return null;
+  }
+
   @override
   String toString() {
     return 'SavedSession('
@@ -135,6 +177,8 @@ class SavedSession {
         'savedAt: $savedAt, '
         'activityLabel: $activityLabel, '
         'placementLabel: $placementLabel, '
+        'testId: $testId, '
+        'testTitle: $testTitle, '
         'notes: $notes'
         ')';
   }
@@ -152,6 +196,8 @@ class SavedSession {
         other.savedAt == savedAt &&
         other.activityLabel == activityLabel &&
         other.placementLabel == placementLabel &&
+        other.testId == testId &&
+        other.testTitle == testTitle &&
         other.notes == notes;
   }
 
@@ -165,6 +211,8 @@ class SavedSession {
     savedAt,
     activityLabel,
     placementLabel,
+    testId,
+    testTitle,
     notes,
   );
 }

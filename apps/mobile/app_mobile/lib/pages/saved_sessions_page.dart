@@ -163,6 +163,15 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     return null;
   }
 
+  String? _preferredTestTitle(SavedSession session) {
+    final savedTitle = session.testTitle?.trim();
+    if (savedTitle != null && savedTitle.isNotEmpty) {
+      return savedTitle;
+    }
+
+    return _testTitleFromNotes(session);
+  }
+
   Widget _chip({
     required String label,
     required Color textColor,
@@ -460,7 +469,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     final hasPlacementLabel =
         session.placementLabel != null &&
         session.placementLabel!.trim().isNotEmpty;
-    final testTitle = _testTitleFromNotes(session);
+    final testTitle = _preferredTestTitle(session);
 
     return InkWell(
       borderRadius: BorderRadius.circular(24),
