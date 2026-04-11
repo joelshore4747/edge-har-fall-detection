@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
+import '../data/test_definitions.dart ';
 import '../models/sensor_sample.dart';
 import '../services/runtime_api_service.dart';
 import '../services/sensor_recorder.dart';
@@ -54,6 +55,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   );
 
   String _selectedPlacement = 'pocket';
+  String _selectedTestId = kTestDefinitions.first.id;
   int _selectedSection = 0; // 0 monitor, 1 session, 2 checks
 
   String? _savedSessionsDirPath;
@@ -110,6 +112,14 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   String _normalisedPlacement() => _selectedPlacement;
+
+  TestDefinition get _selectedTest =>
+      kTestDefinitions.firstWhere((test) => test.id == _selectedTestId);
+
+  String _recordingStatusText() {
+    final test = _selectedTest;
+    return 'Ready to record: ${test.title}';
+  }
 
   Future<void> _checkHealth() async {
     if (!mounted) return;
@@ -1275,6 +1285,162 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     );
   }
 
+  Widget _buildSelectedTestSummary() {
+    final test = _selectedTest;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _softBackground,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Selected Test',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: _textSecondary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            test.title,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: _textPrimary,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            test.instructions,
+            style: const TextStyle(
+              fontSize: 14,
+              height: 1.4,
+              color: _textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _chip(
+                label: '${test.suggestedDurationSeconds}s',
+                textColor: _textPrimary,
+                icon: Icons.timer_outlined,
+                background: Colors.white,
+              ),
+              _chip(
+                label: test.isFallRelated
+                    ? 'Fall-related'
+                    : 'ADL / normal motion',
+                textColor: test.isFallRelated ? _warning : _success,
+                icon: test.isFallRelated
+                    ? Icons.warning_amber_rounded
+                    : Icons.verified_outlined,
+                background: Colors.white,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Safety: ${test.safetyNote}',
+            style: const TextStyle(
+              fontSize: 13,
+              color: _textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTestCard(TestDefinition test) {
+    final isSelected = test.id == _selectedTestId;
+
+    return InkWell(
+      borderRadius: BorderRadius.circular(18),
+      onTap: () {
+        setState(() {
+          _selectedTestId = test.id;
+          _status = 'Selected test: ${test.title}';
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isSelected ? _accent.withValues(alpha: 0.10) : _softBackground,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected ? _accent : _border,
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    test.title,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: _textPrimary,
+                    ),
+                  ),
+                ),
+                if (isSelected)
+                  const Icon(Icons.check_circle, color: _accent, size: 20),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              test.instructions,
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.35,
+                color: _textSecondary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _chip(
+                  label: '${test.suggestedDurationSeconds}s',
+                  textColor: _textPrimary,
+                  icon: Icons.timer_outlined,
+                  background: Colors.white,
+                ),
+                _chip(
+                  label: test.isFallRelated ? 'Fall' : 'Normal',
+                  textColor: test.isFallRelated ? _warning : _success,
+                  icon: test.isFallRelated
+                      ? Icons.warning_amber_rounded
+                      : Icons.directions_walk_rounded,
+                  background: Colors.white,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildSessionTab() {
     return _card(
       child: Column(
@@ -1282,7 +1448,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
         children: [
           _sectionTitle(
             'Session Setup',
-            'Configure the subject and declared placement for the current session.',
+            'Choose a test, set subject details, and prepare for local recording.',
           ),
           TextField(
             controller: _subjectController,
@@ -1317,6 +1483,45 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
             },
           ),
           const SizedBox(height: 16),
+          _buildSelectedTestSummary(),
+          const SizedBox(height: 18),
+          const Text(
+            'Test List',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              color: _textPrimary,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Tap a test below before recording on your phone.',
+            style: TextStyle(
+              fontSize: 14,
+              color: _textSecondary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              const gap = 12.0;
+              final cols = constraints.maxWidth >= 900 ? 2 : 1;
+              final width = (constraints.maxWidth - gap * (cols - 1)) / cols;
+
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: kTestDefinitions
+                    .map(
+                      (test) =>
+                          SizedBox(width: width, child: _buildTestCard(test)),
+                    )
+                    .toList(),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -1326,11 +1531,12 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
               border: Border.all(color: _border),
             ),
             child: Text(
-              'Current session: ${_activeSessionId ?? '-'}',
+              'Current session: ${_activeSessionId ?? '-'}\n${_recordingStatusText()}',
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
                 color: _textPrimary,
+                height: 1.45,
               ),
             ),
           ),
