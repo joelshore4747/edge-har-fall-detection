@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
@@ -81,13 +82,13 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
       _refreshSavedSessionsPath();
     }
 
-  @override
-  void dispose() {
-    _api.dispose();
-    _recorder.dispose();
-    _subjectController.dispose();
-    super.dispose();
-  }
+    @override
+    void dispose() {
+      _api.dispose();
+      unawaited(_recorder.dispose());
+      _subjectController.dispose();
+      super.dispose();
+    }
 
   String _newSessionId() => 'session_${DateTime.now().millisecondsSinceEpoch}';
 
@@ -802,12 +803,18 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                       background: Colors.white.withValues(alpha: 0.16),
                     ),
                     _chip(
-                      label: _serverHealthy ? 'Server Ready' : 'Server Offline',
+                      label: _health == null
+                          ? 'Server Not Checked'
+                          : (_serverHealthy ? 'Server Ready' : 'Server Offline'),
                       textColor: Colors.white,
-                      icon: _serverHealthy ? Icons.cloud_done : Icons.cloud_off,
-                      background: _serverHealthy
-                          ? _success.withValues(alpha: 0.32)
-                          : _danger.withValues(alpha: 0.26),
+                      icon: _health == null
+                          ? Icons.help_outline
+                          : (_serverHealthy ? Icons.cloud_done : Icons.cloud_off),
+                      background: _health == null
+                          ? Colors.white.withValues(alpha: 0.16)
+                          : (_serverHealthy
+                              ? _success.withValues(alpha: 0.32)
+                              : _danger.withValues(alpha: 0.26)),
                     ),
                   ],
                 ),
@@ -1573,9 +1580,15 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                 runSpacing: 10,
                 children: [
                   _chip(
-                    label: _serverHealthy ? 'Healthy' : 'Unavailable',
-                    textColor: _serverHealthy ? _success : _danger,
-                    icon: _serverHealthy ? Icons.cloud_done : Icons.cloud_off,
+                      label: _health == null
+                          ? 'Not Checked'
+                          : (_serverHealthy ? 'Healthy' : 'Unavailable'),
+                      textColor: _health == null
+                          ? _textPrimary
+                          : (_serverHealthy ? _success : _danger),
+                      icon: _health == null
+                          ? Icons.help_outline
+                          : (_serverHealthy ? Icons.cloud_done : Icons.cloud_off),
                   ),
                   _chip(
                     label: _healthText(),
