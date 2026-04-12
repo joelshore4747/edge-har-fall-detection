@@ -1,11 +1,14 @@
-import 'package:flutter/material.dart';
+import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/material.dart';
 import '../models/api_result_summary.dart';
 import '../models/saved_session.dart';
 import '../models/sensor_sample.dart';
 import '../services/runtime_api_service.dart';
 import '../services/session_storage_service.dart';
 import 'saved_sessions_page.dart';
+import 'package:share_plus/share_plus.dart';
 
 class SessionDetailPage extends StatefulWidget {
   const SessionDetailPage({super.key, required this.session});
@@ -60,6 +63,9 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   bool _saving = false;
   bool _sending = false;
   bool _submittingFeedback = false;
+  bool _showMagnitude = true;
+  bool _exportingJson = false;
+  bool _exportingCsv = false;
 
   Map<String, dynamic>? _payload;
   ApiResultSummary? _result;
@@ -68,6 +74,12 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   late String _activityLabel;
   late String _placementLabel;
   late TextEditingController _notesController;
+
+  void _log(String message) {
+    if (kDebugMode) {
+      debugPrint('[SessionDetailPage] $message');
+    }
+  }
 
   @override
   void initState() {
@@ -87,6 +99,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
   Future<void> _load() async {
     try {
+      _log('Loading saved session ${widget.session.filePath}');
       final payload = await _storage.loadSessionPayload(
         widget.session.filePath,
       );
@@ -94,26 +107,125 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       ApiResultSummary? restoredResult;
       final savedInference = payload['inference_result'];
       if (savedInference is Map) {
-        restoredResult = ApiResultSummary.fromJson(
-          savedInference.map((key, value) => MapEntry(key.toString(), value)),
-        );
+        try {
+          restoredResult = ApiResultSummary.fromJson(
+            savedInference.map((key, value) => MapEntry(key.toString(), value)),
+          );
+        } catch (error, stackTrace) {
+          _log(
+            'Ignoring malformed inference_result in '
+            '${widget.session.filePath}: $error',
+          );
+          if (kDebugMode) {
+            debugPrint(stackTrace.toString());
+          }
+        }
       }
+
+      final loadedSamples = payload['samples'];
+      final sampleCount = loadedSamples is List ? loadedSamples.length : 0;
 
       if (!mounted) return;
       setState(() {
         _payload = payload;
         _result = restoredResult;
         _loading = false;
-        _status = restoredResult == null
-            ? 'Session loaded'
-            : 'Session loaded with saved inference result';
+        if (sampleCount == 0) {
+          _status = 'Session loaded, but it has no valid samples.';
+        } else {
+          _status = restoredResult == null
+              ? 'Session loaded'
+              : 'Session loaded with saved inference result';
+        }
+      });
+      _log(
+        'Loaded ${loadedSamples is List ? loadedSamples.length : 0} valid sample(s) '
+        'for ${widget.session.filePath}',
+      );
+    } catch (e, stackTrace) {
+      _log('Failed to load saved session ${widget.session.filePath}: $e');
+      if (kDebugMode) {
+        debugPrint(stackTrace.toString());
+      }
+      if (!mounted) return;
+      setState(() {
+        _payload = null;
+        _result = null;
+        _loading = false;
+        _status = 'Failed to load session: $e';
+      });
+    }
+  }
+
+  Future<void> _exportSessionJson() async {
+    setState(() {
+      _exportingJson = true;
+      _status = 'Exporting JSON...';
+    });
+
+    try {
+      final file = await _storage.exportSessionJsonFile(
+        widget.session.filePath,
+      );
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: 'Exported session JSON',
+          subject: widget.session.fileName,
+        ),
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _status = 'JSON export ready';
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _loading = false;
-        _status = 'Failed to load session: $e';
+        _status = 'Failed to export JSON: $e';
       });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _exportingJson = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _exportSessionCsv() async {
+    setState(() {
+      _exportingCsv = true;
+      _status = 'Exporting CSV...';
+    });
+
+    try {
+      final file = await _storage.exportSessionCsvFile(widget.session.filePath);
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(file.path)],
+          text: 'Exported session CSV',
+          subject: widget.session.fileName,
+        ),
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _status = 'CSV export ready';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _status = 'Failed to export CSV: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _exportingCsv = false;
+        });
+      }
     }
   }
 
@@ -157,10 +269,10 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       return;
     }
 
-    final samplesRaw = _payload!['samples'] as List?;
-    if (samplesRaw == null || samplesRaw.isEmpty) {
+    final samplesRaw = _payload!['samples'];
+    if (samplesRaw is! List || samplesRaw.isEmpty) {
       setState(() {
-        _status = 'This saved session has no samples.';
+        _status = 'This saved session has no valid samples.';
       });
       return;
     }
@@ -185,14 +297,14 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
       final rawSamples =
           runtimePayload['samples'] as List<dynamic>? ?? <dynamic>[];
-      final samples = rawSamples
-          .whereType<Map>()
-          .map((item) => item.cast<String, dynamic>())
-          .map(SensorSample.fromJson)
-          .toList(growable: false);
+      final samples = _parseSamples(
+        rawSamples,
+        context: 'server replay',
+        logSkips: true,
+      );
 
       if (samples.length < 32) {
-        throw StateError('Saved session contains fewer than 32 samples.');
+        throw StateError('Saved session contains fewer than 32 valid samples.');
       }
 
       final summary = await _api.submitSession(
@@ -352,19 +464,52 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   double? _firstTimestamp() {
-    final samples = _payload?['samples'] as List?;
-    if (samples == null || samples.isEmpty) return null;
+    final samples = _payload?['samples'];
+    if (samples is! List || samples.isEmpty) return null;
     final first = samples.first;
     if (first is! Map) return null;
     return _asDouble(first['timestamp']);
   }
 
   double? _lastTimestamp() {
-    final samples = _payload?['samples'] as List?;
-    if (samples == null || samples.isEmpty) return null;
+    final samples = _payload?['samples'];
+    if (samples is! List || samples.isEmpty) return null;
     final last = samples.last;
     if (last is! Map) return null;
     return _asDouble(last['timestamp']);
+  }
+
+  List<SensorSample> _sessionSamples() {
+    final rawSamples = _payload?['samples'];
+    if (rawSamples is! List || rawSamples.isEmpty) {
+      return const <SensorSample>[];
+    }
+
+    return _parseSamples(rawSamples, context: 'session detail');
+  }
+
+  List<SensorSample> _parseSamples(
+    List<dynamic> rawSamples, {
+    required String context,
+    bool logSkips = false,
+  }) {
+    final samples = <SensorSample>[];
+
+    for (var i = 0; i < rawSamples.length; i++) {
+      final sample = SensorSample.tryFromJson(
+        rawSamples[i],
+        onInvalid: logSkips
+            ? (message) {
+                _log('Skipping invalid sample #$i during $context: $message');
+              }
+            : null,
+      );
+      if (sample != null) {
+        samples.add(sample);
+      }
+    }
+
+    return samples;
   }
 
   String? _preferredTestTitle() {
@@ -577,6 +722,143 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     );
   }
 
+  Widget _legendChip({
+    required String label,
+    required Color color,
+    bool selected = true,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: selected ? color.withValues(alpha: 0.12) : Colors.white,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: selected ? color.withValues(alpha: 0.35) : _border,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: selected ? _textPrimary : _textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSensorGraphCard() {
+    final samples = _sessionSamples();
+
+    if (samples.isEmpty) {
+      return _card(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _sectionTitle(
+              'Sensor Graph',
+              'Visual preview of recorded accelerometer values.',
+            ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: _softBackground,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: _border),
+              ),
+              child: const Text(
+                'No samples available for graphing.',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: _textSecondary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle(
+            'Sensor Graph',
+            'Raw accelerometer traces for this saved session.',
+          ),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _legendChip(label: 'ax', color: const Color(0xFFD64545)),
+              _legendChip(label: 'ay', color: const Color(0xFF2FA36B)),
+              _legendChip(label: 'az', color: const Color(0xFF2D6CDF)),
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _showMagnitude = !_showMagnitude;
+                  });
+                },
+                child: _legendChip(
+                  label: 'magnitude',
+                  color: const Color(0xFF6B4FD3),
+                  selected: _showMagnitude,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: 260,
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _softBackground,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _border),
+            ),
+            child: CustomPaint(
+              painter: _SensorGraphPainter(
+                samples: samples,
+                showMagnitude: _showMagnitude,
+                borderColor: _border,
+                axisColor: _textSecondary,
+                axColor: const Color(0xFFD64545),
+                ayColor: const Color(0xFF2FA36B),
+                azColor: const Color(0xFF2D6CDF),
+                magnitudeColor: const Color(0xFF6B4FD3),
+              ),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Samples: ${samples.length} • Duration: ${_formatSeconds((samples.last.timestamp - samples.first.timestamp).abs())}',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: _textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _uniformActionButton({
     required String label,
     required IconData icon,
@@ -765,6 +1047,24 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                     icon: Icons.refresh_rounded,
                     onPressed: _sending ? null : _sendSavedSessionToServer,
                     loading: _sending,
+                  ),
+                ),
+                SizedBox(
+                  width: wide ? 220 : double.infinity,
+                  child: _uniformActionButton(
+                    label: _exportingJson ? 'Exporting JSON...' : 'Export JSON',
+                    icon: Icons.data_object_rounded,
+                    onPressed: _exportingJson ? null : _exportSessionJson,
+                    loading: _exportingJson,
+                  ),
+                ),
+                SizedBox(
+                  width: wide ? 220 : double.infinity,
+                  child: _uniformActionButton(
+                    label: _exportingCsv ? 'Exporting CSV...' : 'Export CSV',
+                    icon: Icons.table_chart_outlined,
+                    onPressed: _exportingCsv ? null : _exportSessionCsv,
+                    loading: _exportingCsv,
                   ),
                 ),
               ],
@@ -1500,6 +1800,8 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
             const SizedBox(height: 16),
             _buildInferenceResultCard(),
             const SizedBox(height: 16),
+            _buildSensorGraphCard(),
+            const SizedBox(height: 16),
             _buildNarrativeCard(),
             const SizedBox(height: 16),
             _buildTimelineCard(),
@@ -1536,6 +1838,8 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    final payload = _payload;
+
     return Scaffold(
       backgroundColor: _pageBackground,
       appBar: AppBar(
@@ -1559,6 +1863,45 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       body: SafeArea(
         child: _loading
             ? const Center(child: CircularProgressIndicator())
+            : payload == null
+            ? Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 680),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: _card(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _sectionTitle(
+                            'Session Load Failed',
+                            'This saved session could not be parsed safely.',
+                          ),
+                          Text(
+                            _status,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: _textPrimary,
+                              height: 1.4,
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          SizedBox(
+                            width: 240,
+                            child: _uniformActionButton(
+                              label: 'Back to Sessions',
+                              icon: Icons.folder_open_rounded,
+                              onPressed: _openSavedSessions,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              )
             : Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 1220),
@@ -1594,4 +1937,161 @@ double? _asDouble(dynamic value) {
     return value.toDouble();
   }
   return double.tryParse(value.toString());
+}
+
+class _SensorGraphPainter extends CustomPainter {
+  _SensorGraphPainter({
+    required this.samples,
+    required this.showMagnitude,
+    required this.borderColor,
+    required this.axisColor,
+    required this.axColor,
+    required this.ayColor,
+    required this.azColor,
+    required this.magnitudeColor,
+  });
+
+  final List<SensorSample> samples;
+  final bool showMagnitude;
+  final Color borderColor;
+  final Color axisColor;
+  final Color axColor;
+  final Color ayColor;
+  final Color azColor;
+  final Color magnitudeColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (samples.length < 2) {
+      return;
+    }
+
+    const leftPad = 8.0;
+    const rightPad = 8.0;
+    const topPad = 10.0;
+    const bottomPad = 10.0;
+
+    final chartRect = Rect.fromLTWH(
+      leftPad,
+      topPad,
+      size.width - leftPad - rightPad,
+      size.height - topPad - bottomPad,
+    );
+
+    final backgroundPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.fill;
+
+    final borderPaint = Paint()
+      ..color = borderColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(chartRect, const Radius.circular(12)),
+      backgroundPaint,
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(chartRect, const Radius.circular(12)),
+      borderPaint,
+    );
+
+    final values = <double>[];
+    for (final sample in samples) {
+      values.add(sample.ax);
+      values.add(sample.ay);
+      values.add(sample.az);
+      if (showMagnitude) {
+        values.add(
+          math.sqrt(
+            (sample.ax * sample.ax) +
+                (sample.ay * sample.ay) +
+                (sample.az * sample.az),
+          ),
+        );
+      }
+    }
+
+    double minValue = values.reduce(math.min);
+    double maxValue = values.reduce(math.max);
+
+    if ((maxValue - minValue).abs() < 0.0001) {
+      maxValue += 1;
+      minValue -= 1;
+    }
+
+    final range = maxValue - minValue;
+    final firstTs = samples.first.timestamp;
+    final lastTs = samples.last.timestamp;
+    final timeSpan = (lastTs - firstTs).abs() < 0.0001
+        ? 1.0
+        : (lastTs - firstTs);
+
+    final zeroY =
+        chartRect.bottom - ((0 - minValue) / range) * chartRect.height;
+    final axisPaint = Paint()
+      ..color = axisColor.withValues(alpha: 0.35)
+      ..strokeWidth = 1;
+
+    if (zeroY >= chartRect.top && zeroY <= chartRect.bottom) {
+      canvas.drawLine(
+        Offset(chartRect.left, zeroY),
+        Offset(chartRect.right, zeroY),
+        axisPaint,
+      );
+    }
+
+    void drawSeries(
+      double Function(SensorSample sample) selector,
+      Color color,
+    ) {
+      final path = Path();
+
+      for (var i = 0; i < samples.length; i++) {
+        final sample = samples[i];
+        final dx =
+            chartRect.left +
+            ((sample.timestamp - firstTs) / timeSpan) * chartRect.width;
+        final value = selector(sample);
+        final dy =
+            chartRect.bottom - ((value - minValue) / range) * chartRect.height;
+
+        if (i == 0) {
+          path.moveTo(dx, dy);
+        } else {
+          path.lineTo(dx, dy);
+        }
+      }
+
+      final paint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+
+      canvas.drawPath(path, paint);
+    }
+
+    drawSeries((sample) => sample.ax, axColor);
+    drawSeries((sample) => sample.ay, ayColor);
+    drawSeries((sample) => sample.az, azColor);
+
+    if (showMagnitude) {
+      drawSeries(
+        (sample) => math.sqrt(
+          (sample.ax * sample.ax) +
+              (sample.ay * sample.ay) +
+              (sample.az * sample.az),
+        ),
+        magnitudeColor,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SensorGraphPainter oldDelegate) {
+    return oldDelegate.samples != samples ||
+        oldDelegate.showMagnitude != showMagnitude;
+  }
 }

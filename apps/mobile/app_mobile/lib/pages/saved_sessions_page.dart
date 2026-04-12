@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 
 import '../models/saved_session.dart';
@@ -29,6 +30,12 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
   String? _errorMessage;
   List<SavedSession> _sessions = const <SavedSession>[];
 
+  void _log(String message) {
+    if (kDebugMode) {
+      debugPrint('[SavedSessionsPage] $message');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +51,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     });
 
     try {
+      _log('Loading saved sessions list');
       final sessions = await _storage.listSessions();
 
       if (!mounted) return;
@@ -51,7 +59,9 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
         _sessions = sessions;
         _loading = false;
       });
+      _log('Loaded ${sessions.length} saved session(s)');
     } catch (e) {
+      _log('Failed to load saved sessions: $e');
       if (!mounted) return;
       setState(() {
         _sessions = const <SavedSession>[];

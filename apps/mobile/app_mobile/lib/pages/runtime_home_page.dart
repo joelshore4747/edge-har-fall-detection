@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, debugPrint, kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
@@ -23,13 +23,10 @@ class RuntimeHomePage extends StatefulWidget {
 }
 
 class _RuntimeHomePageState extends State<RuntimeHomePage> {
-
   static const String _baseUrl = 'http://192.168.1.50:8000';
 
   static const Color _accent = Color(0xFFC14953);
-  static const Color _pageBackground = Color(
-    0xFF848FA5,
-  );
+  static const Color _pageBackground = Color(0xFF848FA5);
   static const Color _cardBackground = Color(0xFFF9FAFC);
   static const Color _softBackground = Color(0xFFF1F3F7);
   static const Color _border = Color(0xFFD8DEE8);
@@ -75,20 +72,27 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   RuntimeHealthResponse? _health;
   ApiResultSummary? _result;
 
-  @override
-    void initState() {
-      super.initState();
-      _status = 'Ready for local recording.';
-      _refreshSavedSessionsPath();
+  void _log(String message) {
+    if (kDebugMode) {
+      debugPrint('[RuntimeHomePage] $message');
     }
+  }
 
-    @override
-    void dispose() {
-      _api.dispose();
-      unawaited(_recorder.dispose());
-      _subjectController.dispose();
-      super.dispose();
-    }
+  @override
+  void initState() {
+    super.initState();
+    _status = 'Ready for local recording.';
+    _log('Runtime home initialised');
+    _refreshSavedSessionsPath();
+  }
+
+  @override
+  void dispose() {
+    _api.dispose();
+    unawaited(_recorder.dispose());
+    _subjectController.dispose();
+    super.dispose();
+  }
 
   String _newSessionId() => 'session_${DateTime.now().millisecondsSinceEpoch}';
 
@@ -117,13 +121,13 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   TestDefinition get _selectedTest =>
       kTestDefinitions.firstWhere((test) => test.id == _selectedTestId);
 
-    String _recordingStatusText() {
-      final test = _selectedTest;
-      if (_recorder.isRecording) {
-        return 'Recording: ${test.title}';
-      }
-      return 'Ready to record: ${test.title}';
+  String _recordingStatusText() {
+    final test = _selectedTest;
+    if (_recorder.isRecording) {
+      return 'Recording: ${test.title}';
     }
+    return 'Ready to record: ${test.title}';
+  }
 
   Future<void> _checkHealth() async {
     if (!mounted) return;
@@ -162,6 +166,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
   Future<void> _refreshSavedSessionsPath({bool updateStatus = false}) async {
     try {
+      _log('Resolving saved sessions directory');
       final path = await _storage.getSavedSessionsDirectoryPath();
       if (!mounted) return;
       setState(() {
@@ -171,7 +176,9 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
           _status = 'Saved sessions directory: $path';
         }
       });
+      _log('Saved sessions directory: $path');
     } catch (e) {
+      _log('Failed to resolve saved sessions directory: $e');
       if (!mounted) return;
       setState(() {
         _savedSessionsDirPath = null;
@@ -236,50 +243,52 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   Future<void> _stopRecording() async {
-  final selectedTest = _selectedTest;
+    final selectedTest = _selectedTest;
 
-  try {
-    await _recorder.stop();
+    try {
+      await _recorder.stop();
 
-    final path = await _recorder.saveSessionLocally(
-      subjectId: _normalisedSubjectId(),
-      placement: _normalisedPlacement(),
-      testId: selectedTest.id,
-      testTitle: selectedTest.title,
-      extraNotes: selectedTest.instructions,
-    );
-
-    await _refreshSavedSessionsPath();
-    if (!mounted) return;
-
-    setState(() {
-      if (path == null) {
-        _status = 'Recording stopped for ${selectedTest.title}. No samples saved.';
-        _recordSaveOutcome(
-          outcome: _SaveOutcome.skipped,
-          status: 'No samples were available to save for ${selectedTest.title}.',
-        );
-      } else {
-        _status =
-            'Recording stopped for ${selectedTest.title}. Saved locally at $path';
-        _recordSaveOutcome(
-          outcome: _SaveOutcome.success,
-          status: 'Saved ${selectedTest.title} session to disk.',
-          savedPath: path,
-        );
-      }
-    });
-  } catch (e) {
-    if (!mounted) return;
-    setState(() {
-      _status = 'Failed to stop recording for ${selectedTest.title}: $e';
-      _recordSaveOutcome(
-        outcome: _SaveOutcome.failed,
-        status: 'Save failed for ${selectedTest.title}: $e',
+      final path = await _recorder.saveSessionLocally(
+        subjectId: _normalisedSubjectId(),
+        placement: _normalisedPlacement(),
+        testId: selectedTest.id,
+        testTitle: selectedTest.title,
+        extraNotes: selectedTest.instructions,
       );
-    });
+
+      await _refreshSavedSessionsPath();
+      if (!mounted) return;
+
+      setState(() {
+        if (path == null) {
+          _status =
+              'Recording stopped for ${selectedTest.title}. No samples saved.';
+          _recordSaveOutcome(
+            outcome: _SaveOutcome.skipped,
+            status:
+                'No samples were available to save for ${selectedTest.title}.',
+          );
+        } else {
+          _status =
+              'Recording stopped for ${selectedTest.title}. Saved locally at $path';
+          _recordSaveOutcome(
+            outcome: _SaveOutcome.success,
+            status: 'Saved ${selectedTest.title} session to disk.',
+            savedPath: path,
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _status = 'Failed to stop recording for ${selectedTest.title}: $e';
+        _recordSaveOutcome(
+          outcome: _SaveOutcome.failed,
+          status: 'Save failed for ${selectedTest.title}: $e',
+        );
+      });
+    }
   }
-}
 
   Future<void> _sendForInference() async {
     if (_recorder.samples.isEmpty) {
@@ -805,16 +814,20 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                     _chip(
                       label: _health == null
                           ? 'Server Not Checked'
-                          : (_serverHealthy ? 'Server Ready' : 'Server Offline'),
+                          : (_serverHealthy
+                                ? 'Server Ready'
+                                : 'Server Offline'),
                       textColor: Colors.white,
                       icon: _health == null
                           ? Icons.help_outline
-                          : (_serverHealthy ? Icons.cloud_done : Icons.cloud_off),
+                          : (_serverHealthy
+                                ? Icons.cloud_done
+                                : Icons.cloud_off),
                       background: _health == null
                           ? Colors.white.withValues(alpha: 0.16)
                           : (_serverHealthy
-                              ? _success.withValues(alpha: 0.32)
-                              : _danger.withValues(alpha: 0.26)),
+                                ? _success.withValues(alpha: 0.32)
+                                : _danger.withValues(alpha: 0.26)),
                     ),
                   ],
                 ),
@@ -1015,7 +1028,10 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                         child: _uniformActionButton(
                           label: 'Run Demo Session',
                           icon: Icons.bolt_outlined,
-                          onPressed: (!_recorder.supportsLiveSensors && !_isSending && !isRecording)
+                          onPressed:
+                              (!_recorder.supportsLiveSensors &&
+                                  !_isSending &&
+                                  !isRecording)
                               ? _sendBundledDemoSession
                               : null,
                           primary: !liveSensorsSupported,
@@ -1024,7 +1040,9 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                       SizedBox(
                         width: width,
                         child: _uniformActionButton(
-                          label: _isSending ? 'Sending...' : 'Send Recording to Server',
+                          label: _isSending
+                              ? 'Sending...'
+                              : 'Send Recording to Server',
                           icon: Icons.cloud_upload_outlined,
                           onPressed:
                               (_isSending ||
@@ -1580,15 +1598,15 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                 runSpacing: 10,
                 children: [
                   _chip(
-                      label: _health == null
-                          ? 'Not Checked'
-                          : (_serverHealthy ? 'Healthy' : 'Unavailable'),
-                      textColor: _health == null
-                          ? _textPrimary
-                          : (_serverHealthy ? _success : _danger),
-                      icon: _health == null
-                          ? Icons.help_outline
-                          : (_serverHealthy ? Icons.cloud_done : Icons.cloud_off),
+                    label: _health == null
+                        ? 'Not Checked'
+                        : (_serverHealthy ? 'Healthy' : 'Unavailable'),
+                    textColor: _health == null
+                        ? _textPrimary
+                        : (_serverHealthy ? _success : _danger),
+                    icon: _health == null
+                        ? Icons.help_outline
+                        : (_serverHealthy ? Icons.cloud_done : Icons.cloud_off),
                   ),
                   _chip(
                     label: _healthText(),
