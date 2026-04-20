@@ -28,6 +28,8 @@ class PersistedSessionRecord {
     this.recordingEndedAt,
     this.samplingRateHz,
     this.durationSeconds,
+    this.sessionName,
+    this.activityLabel,
     this.notes,
     this.rawStorageUri,
     this.rawStorageFormat,
@@ -59,6 +61,8 @@ class PersistedSessionRecord {
   final int sampleCount;
   final bool hasGyro;
   final double? durationSeconds;
+  final String? sessionName;
+  final String? activityLabel;
   final String? notes;
   final String? rawStorageUri;
   final String? rawStorageFormat;
@@ -94,6 +98,8 @@ class PersistedSessionRecord {
       sampleCount: _asInt(json['sample_count']) ?? 0,
       hasGyro: _asBool(json['has_gyro']) ?? false,
       durationSeconds: _asDouble(json['duration_seconds']),
+      sessionName: _asString(json['session_name']),
+      activityLabel: _asString(json['activity_label']),
       notes: _asString(json['notes']),
       rawStorageUri: _asString(json['raw_storage_uri']),
       rawStorageFormat: _asString(json['raw_storage_format']),

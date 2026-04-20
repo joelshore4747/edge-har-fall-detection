@@ -47,6 +47,8 @@ class SessionStorageService {
     String? recordingMode,
     String? runtimeMode,
     double? samplingRateHz,
+    String? fileName,
+    String? activityLabel,
     String? notes,
   }) async {
     if (samples.isEmpty) {
@@ -56,18 +58,25 @@ class SessionStorageService {
 
     final dir = await _getSessionsDirectory();
     final now = DateTime.now();
-    final fileName = _buildReadableFileName(
+    final displayName = _displaySessionName(
+      requestedFileName: fileName,
       timestamp: now,
+    );
+    final storageFileName = _buildReadableFileName(
+      timestamp: now,
+      displayName: displayName,
       subjectId: subjectId,
       placement: placement,
       recordingMode: recordingMode,
       datasetName: datasetName,
     );
-    final file = await _uniqueFile(dir, fileName);
+    final file = await _uniqueFile(dir, storageFileName);
     _log('Saving session file to ${file.path}');
 
     final payload = <String, dynamic>{
       'schema_version': _schemaVersion,
+      'file_name': displayName,
+      'session_name': displayName,
       'session_id': sessionId,
       'subject_id': subjectId.trim().isEmpty
           ? 'anonymous_user'
@@ -85,7 +94,7 @@ class SessionStorageService {
       'recording_mode': recordingMode,
       'runtime_mode': runtimeMode,
       'sampling_rate_hz': samplingRateHz,
-      'activity_label': null,
+      'activity_label': _cleanOptionalText(activityLabel),
       'placement_label': null,
       'notes': notes ?? '',
       'samples': samples,
@@ -138,7 +147,10 @@ class SessionStorageService {
         sessions.add(
           SavedSession(
             filePath: file.path,
-            fileName: file.uri.pathSegments.last,
+            fileName:
+                _asString(payload['file_name']) ??
+                _asString(payload['session_name']) ??
+                file.uri.pathSegments.last,
             subjectId: _asString(payload['subject_id']) ?? 'unknown',
             placement: _asString(payload['placement']) ?? 'unknown',
             sampleCount:
@@ -269,6 +281,9 @@ class SessionStorageService {
       'session_id': sessionId,
       'subject_id': subjectId,
       'placement': placement,
+      'session_name':
+          _asString(payload['session_name']) ?? _asString(payload['file_name']),
+      'activity_label': _asString(payload['activity_label']),
       'task_type': _asString(payload['task_type']) ?? 'runtime',
       'dataset_name': _asString(payload['dataset_name']) ?? 'APP_RUNTIME_SAVED',
       'source_type': _asString(payload['source_type']) ?? 'mobile_app',
@@ -305,11 +320,17 @@ class SessionStorageService {
 
   String _buildReadableFileName({
     required DateTime timestamp,
+    required String displayName,
     required String subjectId,
     required String placement,
     required String? recordingMode,
     required String datasetName,
   }) {
+    final trimmedName = displayName.trim();
+    if (trimmedName.isNotEmpty) {
+      return '${_slug(trimmedName)}.json';
+    }
+
     final ts =
         '${timestamp.year}-${timestamp.month.toString().padLeft(2, '0')}-${timestamp.day.toString().padLeft(2, '0')}_'
         '${timestamp.hour.toString().padLeft(2, '0')}-${timestamp.minute.toString().padLeft(2, '0')}';
@@ -321,6 +342,30 @@ class SessionStorageService {
     );
 
     return '${ts}_${subject}_${place}_$mode.json';
+  }
+
+  String _displaySessionName({
+    required String? requestedFileName,
+    required DateTime timestamp,
+  }) {
+    final requested = _cleanOptionalText(requestedFileName);
+    if (requested != null) {
+      return requested;
+    }
+
+    final date =
+        '${timestamp.year}-${timestamp.month.toString().padLeft(2, '0')}-${timestamp.day.toString().padLeft(2, '0')}';
+    final time =
+        '${timestamp.hour.toString().padLeft(2, '0')}-${timestamp.minute.toString().padLeft(2, '0')}';
+    return 'session_${date}_$time';
+  }
+
+  String? _cleanOptionalText(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
   }
 
   Future<File> _uniqueFile(Directory dir, String fileName) async {

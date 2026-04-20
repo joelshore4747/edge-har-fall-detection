@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../config/runtime_config.dart';
+import '../config/runtime_labels.dart';
 import '../models/api_result_summary.dart';
 import '../models/persisted_session.dart';
 import '../models/saved_session.dart';
@@ -34,17 +35,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   final SessionStorageService _storage = SessionStorageService();
   RuntimeApiService? _api;
 
-  static const List<String> _activityOptions = [
-    'unknown',
-    'walking',
-    'stairs',
-    'sitting',
-    'standing',
-    'laying',
-    'phone_handling',
-    'fall',
-    'other',
-  ];
+  static const List<String> _activityOptions = runtimeAnnotationActivityOptions;
 
   static const List<String> _placementOptions = [
     'unknown',
@@ -74,7 +65,10 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   @override
   void initState() {
     super.initState();
-    _activityLabel = widget.session.activityLabel ?? 'unknown';
+    _activityLabel = normaliseRuntimeActivityLabel(
+      widget.session.activityLabel,
+      fallback: 'unknown',
+    );
     _placementLabel = widget.session.placementLabel ?? 'unknown';
     _notesController = TextEditingController(text: widget.session.notes ?? '');
     _bootstrapAndLoad();
@@ -164,7 +158,10 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       _payload = mergedPayload;
       _result = mergedResult;
       if (localActivityLabel != null && localActivityLabel.isNotEmpty) {
-        _activityLabel = localActivityLabel;
+        _activityLabel = normaliseRuntimeActivityLabel(
+          localActivityLabel,
+          fallback: 'unknown',
+        );
       }
       if (localPlacementLabel != null && localPlacementLabel.isNotEmpty) {
         _placementLabel = localPlacementLabel;
@@ -219,6 +216,12 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     merged['session_id'] = persistedDetail.session.clientSessionId;
     merged['subject_id'] = persistedDetail.session.subjectId;
     merged['placement'] = persistedDetail.session.placementDeclared;
+    merged['session_name'] =
+        persistedDetail.session.sessionName ?? widget.session.fileName;
+    if (_stringOrNull(merged['activity_label']) == null &&
+        persistedDetail.session.activityLabel != null) {
+      merged['activity_label'] = persistedDetail.session.activityLabel;
+    }
     merged['sample_count'] = persistedDetail.session.sampleCount;
     merged['saved_at'] = persistedDetail.session.uploadedAt
         .toUtc()
@@ -433,6 +436,13 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
         sessionId:
             (metadata['session_id'] as String?) ??
             widget.session.fileName.replaceAll('.json', ''),
+        sessionName:
+            (metadata['session_name'] as String?) ??
+            (metadata['file_name'] as String?) ??
+            widget.session.fileName,
+        activityLabel: _activityLabel != 'unknown'
+            ? _activityLabel
+            : (metadata['activity_label'] as String?),
         subjectId:
             (metadata['subject_id'] as String?) ?? widget.session.subjectId,
         placement: _normalisePlacementForRuntime(

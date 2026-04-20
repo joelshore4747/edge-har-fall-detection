@@ -205,6 +205,8 @@ class RuntimeApiService {
     String recordingMode = 'live_capture',
     String runtimeMode = 'mobile_live',
     double? samplingRateHz,
+    String? sessionName,
+    String? activityLabel,
     String? notes,
     bool includeHarWindows = false,
     bool includeFallWindows = false,
@@ -235,6 +237,8 @@ class RuntimeApiService {
         'device_platform': devicePlatform,
         'device_model': deviceModel,
         'sampling_rate_hz': samplingRateHz,
+        'session_name': _cleanOptionalString(sessionName),
+        'activity_label': _cleanOptionalString(activityLabel),
         'notes': notes,
         'app_version': appVersion,
         'app_build': appBuild,
@@ -559,6 +563,14 @@ String? _asString(dynamic value) {
   }
   final text = value.toString();
   return text.isEmpty ? null : text;
+}
+
+String? _cleanOptionalString(String? value) {
+  if (value == null) {
+    return null;
+  }
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 DateTime? _tryParseDateTime(dynamic value) {

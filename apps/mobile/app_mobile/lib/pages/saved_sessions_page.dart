@@ -233,6 +233,8 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
           placement: remote.placement,
           sampleCount: remote.sampleCount,
           savedAt: savedAt,
+          activityLabel: localMatch.activityLabel ?? remote.activityLabel,
+          notes: localMatch.notes ?? remote.notes,
           persistedUserId: remote.persistedUserId,
           persistedSessionId: remote.persistedSessionId,
           persistedInferenceId: remote.persistedInferenceId,
@@ -255,6 +257,9 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
       case 'walking':
       case 'stairs':
       case 'sitting':
+      case 'standing':
+      case 'lying':
+      case 'transition':
         return _accent;
       case 'unknown':
       case '':

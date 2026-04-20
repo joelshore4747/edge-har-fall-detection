@@ -53,11 +53,13 @@ class SavedSession {
 
   factory SavedSession.fromPersistedSummary(PersistedSessionSummary summary) {
     return SavedSession(
-      fileName: summary.session.clientSessionId,
+      fileName: summary.session.sessionName ?? summary.session.clientSessionId,
       subjectId: summary.session.subjectId,
       placement: summary.session.placementDeclared,
       sampleCount: summary.session.sampleCount,
       savedAt: summary.sortTimestamp.toUtc(),
+      activityLabel: summary.session.activityLabel,
+      notes: summary.session.notes,
       persistedUserId: summary.session.userId,
       persistedSessionId: summary.session.appSessionId,
       persistedInferenceId: summary.latestInferenceId,

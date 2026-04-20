@@ -11,6 +11,7 @@ import '../services/runtime_api_service.dart';
 import '../services/runtime_identity_service.dart';
 import '../services/sensor_recorder.dart';
 import '../services/session_storage_service.dart';
+import '../widgets/session_save_sheet.dart';
 import 'saved_sessions_page.dart';
 
 import '../models/api_result_summary.dart';
@@ -107,6 +108,18 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   String _normalisedPlacement() => _selectedPlacement;
+
+  bool _hasPendingRecording() =>
+      !_recorder.isRecording && _recorder.samples.isNotEmpty;
+
+  String _defaultSessionName() {
+    final now = DateTime.now();
+    final date =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final time =
+        '${now.hour.toString().padLeft(2, '0')}-${now.minute.toString().padLeft(2, '0')}';
+    return 'session_${date}_$time';
+  }
 
   Future<void> _bootstrapIdentityAndHealth() async {
     if (!mounted) return;
@@ -279,29 +292,24 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     try {
       await _recorder.stop();
 
-      final path = await _recorder.saveSessionLocally(
-        subjectId: _normalisedSubjectId(),
-        placement: _normalisedPlacement(),
-      );
-
-      await _refreshSavedSessionsPath();
-      if (!mounted) return;
-      setState(() {
-        if (path == null) {
-          _status = 'Recording stopped. No samples saved.';
+      if (_recorder.samples.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _status = 'Recording stopped. No samples were captured.';
           _recordSaveOutcome(
             outcome: _SaveOutcome.skipped,
             status: 'No samples were available to save.',
           );
-        } else {
-          _status = 'Recording stopped. Saved locally at $path';
-          _recordSaveOutcome(
-            outcome: _SaveOutcome.success,
-            status: 'Saved session to disk.',
-            savedPath: path,
-          );
-        }
+        });
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _status = 'Recording stopped. Name and save your session.';
       });
+
+      await _openSaveFlowForCurrentRecording(openedAfterStop: true);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -314,53 +322,168 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     }
   }
 
-  Future<void> _sendForInference() async {
-    final api = _api;
-    if (api == null) {
-      setState(() {
-        _status =
-            'Your account is still being prepared. Try again in a moment.';
-      });
-      return;
-    }
+  Future<void> _openSaveFlowForCurrentRecording({
+    bool openedAfterStop = false,
+  }) async {
     if (_recorder.samples.isEmpty) {
+      if (!mounted) return;
       setState(() {
-        _status = 'No samples recorded yet.';
+        _status = 'No recorded samples are waiting to be saved.';
       });
       return;
     }
 
+    final saveRequest = await showModalBottomSheet<SessionSaveRequest>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (context) {
+        return SessionSaveSheet(
+          initialFileName: _defaultSessionName(),
+          initialCategory: 'other',
+          sampleCount: _recorder.sampleCount,
+          allowUpload: _serverHealthy && _api != null,
+        );
+      },
+    );
+
+    if (saveRequest == null) {
+      if (!mounted) return;
+      setState(() {
+        _status = openedAfterStop
+            ? 'Save cancelled. This recording is still available to save.'
+            : 'Save cancelled.';
+        _recordSaveOutcome(
+          outcome: _SaveOutcome.skipped,
+          status: 'Save dialog dismissed. Recording is still pending.',
+        );
+      });
+      return;
+    }
+
+    await _saveCurrentRecording(saveRequest);
+  }
+
+  Future<void> _saveCurrentRecording(SessionSaveRequest saveRequest) async {
     final sessionId = _activeSessionId ?? _newSessionId();
+    final shouldUpload =
+        saveRequest.destination == SessionSaveDestination.localAndUpload;
 
     setState(() {
       _isSending = true;
-      _status = 'Sending session to server...';
+      _status = shouldUpload
+          ? 'Saving locally and uploading to server...'
+          : 'Saving session locally...';
     });
 
+    String? savedPath;
+    ApiResultSummary? summary;
+
     try {
-      final summary = await api.submitSession(
+      savedPath = await _storage.saveSession(
         sessionId: sessionId,
+        fileName: saveRequest.fileName,
         subjectId: _normalisedSubjectId(),
         placement: _normalisedPlacement(),
-        samples: _recorder.samples,
+        datasetName: 'APP_RUNTIME',
+        sourceType: _recorder.supportsLiveSensors ? 'mobile_app' : 'debug',
         devicePlatform: _devicePlatformValue(),
         deviceModel: kIsWeb ? 'web_browser' : defaultTargetPlatform.name,
-        includeHarWindows: false,
-        includeFallWindows: false,
-        includeCombinedTimeline: true,
-        includeGroupedFallEvents: true,
+        recordingMode: _recorder.supportsLiveSensors ? 'live_capture' : 'demo',
+        runtimeMode: _recorder.supportsLiveSensors
+            ? 'mobile_live'
+            : 'desktop_demo',
+        activityLabel: saveRequest.category,
+        samples: _recorder.samples
+            .map((sample) => sample.toJson())
+            .toList(growable: false),
       );
 
+      await _refreshSavedSessionsPath();
+
+      if (savedPath == null) {
+        throw StateError('The session did not produce a local save file.');
+      }
+
+      if (shouldUpload) {
+        final api = _api;
+        if (api == null) {
+          throw StateError('Your account is not ready for upload yet.');
+        }
+
+        summary = await api.submitSession(
+          sessionId: sessionId,
+          sessionName: saveRequest.fileName,
+          activityLabel: saveRequest.category,
+          subjectId: _normalisedSubjectId(),
+          placement: _normalisedPlacement(),
+          samples: _recorder.samples,
+          devicePlatform: _devicePlatformValue(),
+          deviceModel: kIsWeb ? 'web_browser' : defaultTargetPlatform.name,
+          includeHarWindows: false,
+          includeFallWindows: false,
+          includeCombinedTimeline: true,
+          includeGroupedFallEvents: true,
+        );
+
+        await _storage.saveInferenceResult(
+          filePath: savedPath,
+          inferenceResult: summary.rawJson,
+        );
+      }
+
+      _recorder.clear();
       if (!mounted) return;
       setState(() {
+        _activeSessionId = null;
         _result = summary;
-        _status = 'Inference complete.';
         _selectedSection = 0;
+        _status = shouldUpload
+            ? 'Saved and uploaded "${saveRequest.fileName}".'
+            : 'Saved "${saveRequest.fileName}" locally.';
+        _recordSaveOutcome(
+          outcome: _SaveOutcome.success,
+          status: shouldUpload
+              ? 'Saved locally and uploaded to the server.'
+              : 'Saved locally only.',
+          savedPath: savedPath,
+        );
       });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            shouldUpload
+                ? 'Saved and uploaded ${saveRequest.fileName}'
+                : 'Saved ${saveRequest.fileName} locally',
+          ),
+        ),
+      );
     } catch (e) {
+      final localSaveSucceeded = savedPath != null;
+      if (localSaveSucceeded) {
+        _recorder.clear();
+      }
       if (!mounted) return;
       setState(() {
-        _status = 'Inference failed: $e';
+        _activeSessionId = localSaveSucceeded ? null : _activeSessionId;
+        _result = summary;
+        _status = localSaveSucceeded
+            ? 'Saved locally as "${saveRequest.fileName}", but upload failed: $e'
+            : 'Failed to save session: $e';
+        _recordSaveOutcome(
+          outcome: localSaveSucceeded
+              ? _SaveOutcome.partial
+              : _SaveOutcome.failed,
+          status: localSaveSucceeded
+              ? 'Local save succeeded, but upload failed.'
+              : 'Local save failed.',
+          savedPath: savedPath,
+        );
       });
     } finally {
       if (mounted) {
@@ -411,6 +534,11 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
       final summary = await api.submitSession(
         sessionId: sessionId,
+        sessionName:
+            (metadata['session_name'] as String?) ??
+            (metadata['file_name'] as String?) ??
+            sessionId,
+        activityLabel: metadata['activity_label'] as String?,
         subjectId: (metadata['subject_id'] as String?) ?? 'demo_user',
         placement: ((metadata['placement'] as String?) ?? 'pocket')
             .toLowerCase(),
@@ -436,6 +564,10 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
       final savedPath = await _storage.saveSession(
         sessionId: sessionId,
+        fileName:
+            (metadata['session_name'] as String?) ??
+            (metadata['file_name'] as String?) ??
+            sessionId,
         subjectId: (metadata['subject_id'] as String?) ?? 'demo_user',
         placement: (metadata['placement'] as String?) ?? 'pocket',
         datasetName: (metadata['dataset_name'] as String?) ?? 'APP_RUNTIME',
@@ -449,6 +581,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
             (metadata['recording_mode'] as String?) ?? 'live_capture',
         runtimeMode: (metadata['runtime_mode'] as String?) ?? 'mobile_live',
         samplingRateHz: _asDouble(metadata['sampling_rate_hz']),
+        activityLabel: metadata['activity_label'] as String?,
         notes: (metadata['notes'] as String?) ?? '',
         samples: samples.map((s) => s.toJson()).toList(growable: false),
       );
@@ -1039,6 +1172,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
                   final liveSensorsSupported = _recorder.supportsLiveSensors;
                   final isRecording = _recorder.isRecording;
+                  final hasPendingRecording = _hasPendingRecording();
 
                   return Wrap(
                     spacing: gap,
@@ -1052,6 +1186,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                           onPressed:
                               (!liveSensorsSupported ||
                                   isRecording ||
+                                  hasPendingRecording ||
                                   _isSending)
                               ? null
                               : _startRecording,
@@ -1073,7 +1208,8 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                         child: _uniformActionButton(
                           label: 'Run Demo Session',
                           icon: Icons.bolt_outlined,
-                          onPressed: (_isSending || isRecording)
+                          onPressed:
+                              (_isSending || isRecording || hasPendingRecording)
                               ? null
                               : _sendBundledDemoSession,
                           primary: !liveSensorsSupported,
@@ -1082,15 +1218,14 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                       SizedBox(
                         width: width,
                         child: _uniformActionButton(
-                          label: _isSending ? 'Sending...' : 'Send to Server',
-                          icon: Icons.cloud_upload_outlined,
+                          label: _isSending ? 'Working...' : 'Save / Upload',
+                          icon: Icons.save_alt_rounded,
                           onPressed:
                               (_isSending ||
                                   isRecording ||
-                                  !_serverHealthy ||
                                   _recorder.samples.isEmpty)
                               ? null
-                              : _sendForInference,
+                              : _openSaveFlowForCurrentRecording,
                           primary: liveSensorsSupported,
                           loading: _isSending,
                         ),
@@ -1101,8 +1236,10 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
               ),
               const SizedBox(height: 16),
               Text(
-                _recorder.supportsLiveSensors
-                    ? 'Live recording is available on supported mobile devices.'
+                _hasPendingRecording()
+                    ? 'A finished recording is waiting to be saved. Save or upload it before starting a new session.'
+                    : _recorder.supportsLiveSensors
+                    ? 'Stop recording to name the session, choose a category, and save it locally or upload it.'
                     : 'This platform is using replay mode because live motion sensors are not available here.',
                 style: const TextStyle(
                   fontSize: 14,
@@ -1574,6 +1711,8 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     switch (_lastSaveOutcome) {
       case _SaveOutcome.success:
         return _success;
+      case _SaveOutcome.partial:
+        return _warning;
       case _SaveOutcome.failed:
         return _danger;
       case _SaveOutcome.skipped:
@@ -1722,7 +1861,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 }
 
-enum _SaveOutcome { none, success, skipped, failed }
+enum _SaveOutcome { none, success, partial, skipped, failed }
 
 double? _asDouble(dynamic value) {
   if (value == null) {
