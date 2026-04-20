@@ -1,6 +1,7 @@
 # Python
 .venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 
 # IDE
@@ -17,3 +18,9 @@ data/processed/*
 # Keep folder structure
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+
+artifacts/**/*.joblib
+artifacts/**/test_predictions.csv
+artifacts/feedback/*.jsonl
+
+results/
