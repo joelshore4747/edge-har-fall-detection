@@ -1,14 +1,14 @@
-import 'dart:math' as math;
-
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
+
+import '../config/runtime_config.dart';
 import '../models/api_result_summary.dart';
+import '../models/persisted_session.dart';
 import '../models/saved_session.dart';
 import '../models/sensor_sample.dart';
 import '../services/runtime_api_service.dart';
+import '../services/runtime_identity_service.dart';
 import '../services/session_storage_service.dart';
 import 'saved_sessions_page.dart';
-import 'package:share_plus/share_plus.dart';
 
 class SessionDetailPage extends StatefulWidget {
   const SessionDetailPage({super.key, required this.session});
@@ -32,9 +32,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   static const Color _warning = Color(0xFFE79A1F);
 
   final SessionStorageService _storage = SessionStorageService();
-  final RuntimeApiService _api = RuntimeApiService(
-    baseUrl: 'http://192.168.1.50:8000',
-  );
+  RuntimeApiService? _api;
 
   static const List<String> _activityOptions = [
     'unknown',
@@ -63,9 +61,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   bool _saving = false;
   bool _sending = false;
   bool _submittingFeedback = false;
-  bool _showMagnitude = true;
-  bool _exportingJson = false;
-  bool _exportingCsv = false;
+  Object? _bootstrapError;
 
   Map<String, dynamic>? _payload;
   ApiResultSummary? _result;
@@ -75,161 +71,235 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   late String _placementLabel;
   late TextEditingController _notesController;
 
-  void _log(String message) {
-    if (kDebugMode) {
-      debugPrint('[SessionDetailPage] $message');
-    }
-  }
-
   @override
   void initState() {
     super.initState();
     _activityLabel = widget.session.activityLabel ?? 'unknown';
     _placementLabel = widget.session.placementLabel ?? 'unknown';
     _notesController = TextEditingController(text: widget.session.notes ?? '');
-    _load();
+    _bootstrapAndLoad();
   }
 
   @override
   void dispose() {
-    _api.dispose();
+    _api?.dispose();
     _notesController.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _bootstrapAndLoad() async {
     try {
-      _log('Loading saved session ${widget.session.filePath}');
-      final payload = await _storage.loadSessionPayload(
-        widget.session.filePath,
+      final identity = await RuntimeIdentityService.instance.ensureIdentity();
+      _api?.dispose();
+      _api = RuntimeApiService(
+        baseUrl: runtimeApiBaseUrl,
+        basicAuthUsername: identity.username,
+        basicAuthPassword: identity.password,
       );
+      _bootstrapError = null;
+    } catch (e) {
+      _bootstrapError = e;
+    }
 
-      ApiResultSummary? restoredResult;
-      final savedInference = payload['inference_result'];
-      if (savedInference is Map) {
-        try {
-          restoredResult = ApiResultSummary.fromJson(
+    await _load();
+  }
+
+  Future<void> _load() async {
+    final api = _api;
+    Map<String, dynamic>? localPayload;
+    ApiResultSummary? localResult;
+    Object? localError;
+
+    if (widget.session.hasLocalFile) {
+      try {
+        localPayload = await _storage.loadSessionPayload(
+          widget.session.filePath!,
+        );
+
+        final savedInference = localPayload['inference_result'];
+        if (savedInference is Map) {
+          localResult = ApiResultSummary.fromJson(
             savedInference.map((key, value) => MapEntry(key.toString(), value)),
           );
-        } catch (error, stackTrace) {
-          _log(
-            'Ignoring malformed inference_result in '
-            '${widget.session.filePath}: $error',
-          );
-          if (kDebugMode) {
-            debugPrint(stackTrace.toString());
-          }
         }
+      } catch (e) {
+        localError = e;
       }
-
-      final loadedSamples = payload['samples'];
-      final sampleCount = loadedSamples is List ? loadedSamples.length : 0;
-
-      if (!mounted) return;
-      setState(() {
-        _payload = payload;
-        _result = restoredResult;
-        _loading = false;
-        if (sampleCount == 0) {
-          _status = 'Session loaded, but it has no valid samples.';
-        } else {
-          _status = restoredResult == null
-              ? 'Session loaded'
-              : 'Session loaded with saved inference result';
-        }
-      });
-      _log(
-        'Loaded ${loadedSamples is List ? loadedSamples.length : 0} valid sample(s) '
-        'for ${widget.session.filePath}',
-      );
-    } catch (e, stackTrace) {
-      _log('Failed to load saved session ${widget.session.filePath}: $e');
-      if (kDebugMode) {
-        debugPrint(stackTrace.toString());
-      }
-      if (!mounted) return;
-      setState(() {
-        _payload = null;
-        _result = null;
-        _loading = false;
-        _status = 'Failed to load session: $e';
-      });
     }
+
+    PersistedSessionDetail? persistedDetail;
+    Object? remoteError;
+    final persistedSessionId = _currentPersistedSessionId(
+      localResult: localResult,
+    );
+    if (persistedSessionId != null && api != null) {
+      try {
+        persistedDetail = await api.fetchPersistedSessionDetail(
+          persistedSessionId,
+        );
+      } catch (e) {
+        remoteError = e;
+      }
+    } else if (persistedSessionId != null) {
+      remoteError =
+          _bootstrapError ?? StateError('Your account is not ready yet.');
+    }
+
+    final mergedPayload = _mergePayloadWithPersistedDetail(
+      localPayload: localPayload,
+      persistedDetail: persistedDetail,
+      fallbackResult: localResult,
+    );
+    final mergedResult =
+        persistedDetail?.latestInference?.response ?? localResult;
+
+    final localActivityLabel = _stringOrNull(mergedPayload?['activity_label']);
+    final localPlacementLabel = _stringOrNull(
+      mergedPayload?['placement_label'],
+    );
+    final localNotes = _stringOrNull(mergedPayload?['notes']);
+
+    if (!mounted) return;
+    setState(() {
+      _payload = mergedPayload;
+      _result = mergedResult;
+      if (localActivityLabel != null && localActivityLabel.isNotEmpty) {
+        _activityLabel = localActivityLabel;
+      }
+      if (localPlacementLabel != null && localPlacementLabel.isNotEmpty) {
+        _placementLabel = localPlacementLabel;
+      }
+      if (localNotes != null) {
+        _notesController.text = localNotes;
+      }
+      _loading = false;
+      _status = _statusForLoadedSession(
+        localPayload: localPayload,
+        persistedDetail: persistedDetail,
+        localError: localError,
+        remoteError: remoteError,
+        mergedResult: mergedResult,
+      );
+    });
   }
 
-  Future<void> _exportSessionJson() async {
-    setState(() {
-      _exportingJson = true;
-      _status = 'Exporting JSON...';
-    });
-
-    try {
-      final file = await _storage.exportSessionJsonFile(
-        widget.session.filePath,
-      );
-
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path)],
-          text: 'Exported session JSON',
-          subject: widget.session.fileName,
-        ),
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _status = 'JSON export ready';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _status = 'Failed to export JSON: $e';
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _exportingJson = false;
-        });
-      }
+  String? _currentPersistedSessionId({ApiResultSummary? localResult}) {
+    final fromResult = _result?.persistedSessionId;
+    if (fromResult != null && fromResult.trim().isNotEmpty) {
+      return fromResult;
     }
+
+    final fromLocalResult = localResult?.persistedSessionId;
+    if (fromLocalResult != null && fromLocalResult.trim().isNotEmpty) {
+      return fromLocalResult;
+    }
+
+    final fromSession = widget.session.persistedSessionId;
+    if (fromSession != null && fromSession.trim().isNotEmpty) {
+      return fromSession;
+    }
+
+    return null;
   }
 
-  Future<void> _exportSessionCsv() async {
-    setState(() {
-      _exportingCsv = true;
-      _status = 'Exporting CSV...';
-    });
-
-    try {
-      final file = await _storage.exportSessionCsvFile(widget.session.filePath);
-
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(file.path)],
-          text: 'Exported session CSV',
-          subject: widget.session.fileName,
-        ),
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _status = 'CSV export ready';
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _status = 'Failed to export CSV: $e';
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _exportingCsv = false;
-        });
-      }
+  Map<String, dynamic>? _mergePayloadWithPersistedDetail({
+    required Map<String, dynamic>? localPayload,
+    required PersistedSessionDetail? persistedDetail,
+    required ApiResultSummary? fallbackResult,
+  }) {
+    if (localPayload == null && persistedDetail == null) {
+      return null;
     }
+
+    final merged = <String, dynamic>{...(localPayload ?? <String, dynamic>{})};
+    if (persistedDetail == null) {
+      return merged;
+    }
+
+    merged['session_id'] = persistedDetail.session.clientSessionId;
+    merged['subject_id'] = persistedDetail.session.subjectId;
+    merged['placement'] = persistedDetail.session.placementDeclared;
+    merged['sample_count'] = persistedDetail.session.sampleCount;
+    merged['saved_at'] = persistedDetail.session.uploadedAt
+        .toUtc()
+        .toIso8601String();
+    merged['updated_at'] = persistedDetail.session.updatedAt
+        .toUtc()
+        .toIso8601String();
+    merged['persisted_session_id'] = persistedDetail.session.appSessionId;
+
+    final remoteFeedback = persistedDetail.feedback
+        .map((entry) => entry.toJson())
+        .toList(growable: false);
+    if (remoteFeedback.isNotEmpty) {
+      merged['feedback'] = remoteFeedback;
+    } else if (!merged.containsKey('feedback')) {
+      merged['feedback'] = const <Map<String, dynamic>>[];
+    }
+
+    final remoteResult = persistedDetail.latestInference?.response;
+    if (remoteResult != null) {
+      merged['inference_result'] = remoteResult.rawJson;
+      merged['inference_saved_at'] = DateTime.now().toUtc().toIso8601String();
+    } else if (fallbackResult != null &&
+        !merged.containsKey('inference_result')) {
+      merged['inference_result'] = fallbackResult.rawJson;
+    }
+
+    return merged;
+  }
+
+  String _statusForLoadedSession({
+    required Map<String, dynamic>? localPayload,
+    required PersistedSessionDetail? persistedDetail,
+    required Object? localError,
+    required Object? remoteError,
+    required ApiResultSummary? mergedResult,
+  }) {
+    if (localError != null && remoteError != null) {
+      return 'Failed to load local session ($localError) and remote session detail ($remoteError).';
+    }
+    if (localError != null) {
+      return 'Local session file unavailable: $localError';
+    }
+    if (remoteError != null && mergedResult != null) {
+      return 'Loaded local session, but remote refresh failed: $remoteError';
+    }
+    if (remoteError != null) {
+      return 'Failed to load remote session detail: $remoteError';
+    }
+    if (persistedDetail != null && widget.session.hasLocalFile) {
+      return 'Session loaded from local file and synced server detail.';
+    }
+    if (persistedDetail != null) {
+      return 'Session loaded from server.';
+    }
+    if (localPayload != null && mergedResult != null) {
+      return 'Session loaded with saved inference result.';
+    }
+    if (localPayload != null) {
+      return 'Session loaded.';
+    }
+    return 'No session data available.';
+  }
+
+  String? _stringOrNull(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
   }
 
   Future<void> _saveLabels() async {
+    if (!widget.session.hasLocalFile) {
+      setState(() {
+        _status =
+            'This session has no local file, so labels cannot be saved on-device.';
+      });
+      return;
+    }
+
     setState(() {
       _saving = true;
       _status = 'Saving labels...';
@@ -237,7 +307,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
     try {
       await _storage.updateSessionLabels(
-        filePath: widget.session.filePath,
+        filePath: widget.session.filePath!,
         activityLabel: _activityLabel,
         placementLabel: _placementLabel,
         notes: _notesController.text.trim(),
@@ -262,6 +332,58 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Future<void> _sendSavedSessionToServer() async {
+    final api = _api;
+    if (api == null) {
+      setState(() {
+        _status =
+            'Your account is still being prepared. Try again in a moment.';
+      });
+      return;
+    }
+
+    if (!widget.session.hasLocalFile) {
+      final persistedSessionId = _currentPersistedSessionId();
+      if (persistedSessionId == null) {
+        setState(() {
+          _status = 'This session has no local payload to replay.';
+        });
+        return;
+      }
+
+      setState(() {
+        _sending = true;
+        _status = 'Refreshing session from server...';
+      });
+
+      try {
+        final persistedDetail = await api.fetchPersistedSessionDetail(
+          persistedSessionId,
+        );
+        if (!mounted) return;
+        setState(() {
+          _payload = _mergePayloadWithPersistedDetail(
+            localPayload: _payload,
+            persistedDetail: persistedDetail,
+            fallbackResult: _result,
+          );
+          _result = persistedDetail.latestInference?.response ?? _result;
+          _status = 'Session refreshed from server.';
+        });
+      } catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _status = 'Failed to refresh session from server: $e';
+        });
+      } finally {
+        if (mounted) {
+          setState(() {
+            _sending = false;
+          });
+        }
+      }
+      return;
+    }
+
     if (_payload == null) {
       setState(() {
         _status = 'No session payload loaded.';
@@ -269,10 +391,10 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       return;
     }
 
-    final samplesRaw = _payload!['samples'];
-    if (samplesRaw is! List || samplesRaw.isEmpty) {
+    final samplesRaw = _payload!['samples'] as List?;
+    if (samplesRaw == null || samplesRaw.isEmpty) {
       setState(() {
-        _status = 'This saved session has no valid samples.';
+        _status = 'This saved session has no samples.';
       });
       return;
     }
@@ -284,7 +406,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
     try {
       final runtimePayload = await _storage.buildInferencePayloadFromFile(
-        filePath: widget.session.filePath,
+        filePath: widget.session.filePath!,
         includeHarWindows: false,
         includeFallWindows: false,
         includeCombinedTimeline: true,
@@ -297,17 +419,17 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
       final rawSamples =
           runtimePayload['samples'] as List<dynamic>? ?? <dynamic>[];
-      final samples = _parseSamples(
-        rawSamples,
-        context: 'server replay',
-        logSkips: true,
-      );
+      final samples = rawSamples
+          .whereType<Map>()
+          .map((item) => item.cast<String, dynamic>())
+          .map(SensorSample.fromJson)
+          .toList(growable: false);
 
       if (samples.length < 32) {
-        throw StateError('Saved session contains fewer than 32 valid samples.');
+        throw StateError('Saved session contains fewer than 32 samples.');
       }
 
-      final summary = await _api.submitSession(
+      final summary = await api.submitSession(
         sessionId:
             (metadata['session_id'] as String?) ??
             widget.session.fileName.replaceAll('.json', ''),
@@ -349,7 +471,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       );
 
       await _storage.saveInferenceResult(
-        filePath: widget.session.filePath,
+        filePath: widget.session.filePath!,
         inferenceResult: summary.rawJson,
       );
 
@@ -358,6 +480,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
         _result = summary;
         _payload = <String, dynamic>{
           ...?_payload,
+          'persisted_session_id': summary.persistedSessionId,
           'inference_result': summary.rawJson,
         };
         _status = 'Saved session inference complete.';
@@ -377,6 +500,14 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Future<void> _submitFeedback(String feedback) async {
+    final api = _api;
+    if (api == null) {
+      setState(() {
+        _status =
+            'Your account is still being prepared. Try again in a moment.';
+      });
+      return;
+    }
     final result = _result;
     if (result == null) {
       setState(() {
@@ -391,30 +522,65 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     });
 
     try {
-      final ack = await _api.submitFeedback(
+      final ack = await api.submitFeedback(
         sessionId: result.sessionId,
+        subjectId: widget.session.subjectId,
+        persistedSessionId: result.persistedSessionId,
+        persistedInferenceId: result.persistedInferenceId,
+        targetType: 'session',
         userFeedback: feedback,
         notes: _notesController.text.trim().isEmpty
             ? null
             : _notesController.text.trim(),
       );
 
-      await _storage.appendFeedback(
-        filePath: widget.session.filePath,
-        feedbackEntry: <String, dynamic>{
-          'request_id': ack.requestId,
-          'recorded_at': ack.recordedAt?.toUtc().toIso8601String(),
-          'status': ack.status,
-          'session_id': ack.sessionId,
-          'event_id': ack.eventId,
-          'window_id': ack.windowId,
-          'user_feedback': ack.userFeedback,
-          'message': ack.message,
-        },
-      );
+      final feedbackEntry = <String, dynamic>{
+        'request_id': ack.requestId,
+        'recorded_at': ack.recordedAt?.toUtc().toIso8601String(),
+        'status': ack.status,
+        'session_id': ack.sessionId,
+        'persisted_session_id': ack.persistedSessionId,
+        'persisted_inference_id': ack.persistedInferenceId,
+        'persisted_feedback_id': ack.persistedFeedbackId,
+        'target_type': ack.targetType,
+        'event_id': ack.eventId,
+        'window_id': ack.windowId,
+        'user_feedback': ack.userFeedback,
+        'message': ack.message,
+      };
+
+      if (widget.session.hasLocalFile) {
+        await _storage.appendFeedback(
+          filePath: widget.session.filePath!,
+          feedbackEntry: feedbackEntry,
+        );
+      }
+
+      PersistedSessionDetail? persistedDetail;
+      final persistedSessionId =
+          ack.persistedSessionId ??
+          result.persistedSessionId ??
+          _currentPersistedSessionId();
+      if (persistedSessionId != null && persistedSessionId.trim().isNotEmpty) {
+        try {
+          persistedDetail = await api.fetchPersistedSessionDetail(
+            persistedSessionId,
+          );
+        } catch (_) {
+          persistedDetail = null;
+        }
+      }
 
       if (!mounted) return;
       setState(() {
+        final feedback = _feedbackEntries().toList(growable: true);
+        feedback.add(feedbackEntry);
+        _payload = _mergePayloadWithPersistedDetail(
+          localPayload: <String, dynamic>{...?_payload, 'feedback': feedback},
+          persistedDetail: persistedDetail,
+          fallbackResult: _result,
+        );
+        _result = persistedDetail?.latestInference?.response ?? _result;
         _status = ack.message;
       });
 
@@ -439,7 +605,10 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     if (!mounted) return;
 
     await Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const SavedSessionsPage()),
+      MaterialPageRoute(
+        builder: (_) =>
+            SavedSessionsPage(initialSubjectId: widget.session.subjectId),
+      ),
       (route) => route.isFirst,
     );
   }
@@ -464,80 +633,19 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   double? _firstTimestamp() {
-    final samples = _payload?['samples'];
-    if (samples is! List || samples.isEmpty) return null;
+    final samples = _payload?['samples'] as List?;
+    if (samples == null || samples.isEmpty) return null;
     final first = samples.first;
     if (first is! Map) return null;
     return _asDouble(first['timestamp']);
   }
 
   double? _lastTimestamp() {
-    final samples = _payload?['samples'];
-    if (samples is! List || samples.isEmpty) return null;
+    final samples = _payload?['samples'] as List?;
+    if (samples == null || samples.isEmpty) return null;
     final last = samples.last;
     if (last is! Map) return null;
     return _asDouble(last['timestamp']);
-  }
-
-  List<SensorSample> _sessionSamples() {
-    final rawSamples = _payload?['samples'];
-    if (rawSamples is! List || rawSamples.isEmpty) {
-      return const <SensorSample>[];
-    }
-
-    return _parseSamples(rawSamples, context: 'session detail');
-  }
-
-  List<SensorSample> _parseSamples(
-    List<dynamic> rawSamples, {
-    required String context,
-    bool logSkips = false,
-  }) {
-    final samples = <SensorSample>[];
-
-    for (var i = 0; i < rawSamples.length; i++) {
-      final sample = SensorSample.tryFromJson(
-        rawSamples[i],
-        onInvalid: logSkips
-            ? (message) {
-                _log('Skipping invalid sample #$i during $context: $message');
-              }
-            : null,
-      );
-      if (sample != null) {
-        samples.add(sample);
-      }
-    }
-
-    return samples;
-  }
-
-  String? _preferredTestTitle() {
-    final savedTitle =
-        _trimmedText(_payload?['test_title']) ?? widget.session.testTitle;
-    if (savedTitle != null && savedTitle.isNotEmpty) {
-      return savedTitle;
-    }
-
-    return _testTitleFromNotes();
-  }
-
-  String? _testTitleFromNotes() {
-    final notes = _notesController.text.trim();
-    if (notes.isEmpty) {
-      return null;
-    }
-
-    for (final part in notes.split(' | ')) {
-      if (part.startsWith('test_title=')) {
-        final value = part.substring('test_title='.length).trim();
-        if (value.isNotEmpty) {
-          return value;
-        }
-      }
-    }
-
-    return null;
   }
 
   List<Map<String, dynamic>> _feedbackEntries() {
@@ -722,143 +830,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     );
   }
 
-  Widget _legendChip({
-    required String label,
-    required Color color,
-    bool selected = true,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: selected ? color.withValues(alpha: 0.12) : Colors.white,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: selected ? color.withValues(alpha: 0.35) : _border,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: selected ? _textPrimary : _textSecondary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSensorGraphCard() {
-    final samples = _sessionSamples();
-
-    if (samples.isEmpty) {
-      return _card(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _sectionTitle(
-              'Sensor Graph',
-              'Visual preview of recorded accelerometer values.',
-            ),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: _softBackground,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: _border),
-              ),
-              child: const Text(
-                'No samples available for graphing.',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                  color: _textSecondary,
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return _card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _sectionTitle(
-            'Sensor Graph',
-            'Raw accelerometer traces for this saved session.',
-          ),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _legendChip(label: 'ax', color: const Color(0xFFD64545)),
-              _legendChip(label: 'ay', color: const Color(0xFF2FA36B)),
-              _legendChip(label: 'az', color: const Color(0xFF2D6CDF)),
-              GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _showMagnitude = !_showMagnitude;
-                  });
-                },
-                child: _legendChip(
-                  label: 'magnitude',
-                  color: const Color(0xFF6B4FD3),
-                  selected: _showMagnitude,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Container(
-            height: 260,
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: _softBackground,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _border),
-            ),
-            child: CustomPaint(
-              painter: _SensorGraphPainter(
-                samples: samples,
-                showMagnitude: _showMagnitude,
-                borderColor: _border,
-                axisColor: _textSecondary,
-                axColor: const Color(0xFFD64545),
-                ayColor: const Color(0xFF2FA36B),
-                azColor: const Color(0xFF2D6CDF),
-                magnitudeColor: const Color(0xFF6B4FD3),
-              ),
-              child: const SizedBox.expand(),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Samples: ${samples.length} • Duration: ${_formatSeconds((samples.last.timestamp - samples.first.timestamp).abs())}',
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: _textSecondary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _uniformActionButton({
     required String label,
     required IconData icon,
@@ -1014,6 +985,13 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                       icon: Icons.phone_android_outlined,
                       background: Colors.white.withValues(alpha: 0.16),
                     ),
+                    if (widget.session.hasPersistedSession)
+                      _chip(
+                        label: 'Server synced',
+                        textColor: Colors.white,
+                        icon: Icons.cloud_done_outlined,
+                        background: Colors.white.withValues(alpha: 0.16),
+                      ),
                     _chip(
                       label:
                           '${firstTs?.toStringAsFixed(1) ?? '-'}s → ${lastTs?.toStringAsFixed(1) ?? '-'}s',
@@ -1035,7 +1013,9 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                   child: _uniformActionButton(
                     label: _saving ? 'Saving...' : 'Save Labels',
                     icon: Icons.save_outlined,
-                    onPressed: _saving ? null : _saveLabels,
+                    onPressed: (_saving || !widget.session.hasLocalFile)
+                        ? null
+                        : _saveLabels,
                     primary: true,
                     loading: _saving,
                   ),
@@ -1043,28 +1023,16 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                 SizedBox(
                   width: wide ? 220 : double.infinity,
                   child: _uniformActionButton(
-                    label: _sending ? 'Replaying...' : 'Replay Through Server',
+                    label: _sending
+                        ? (widget.session.hasLocalFile
+                              ? 'Replaying...'
+                              : 'Refreshing...')
+                        : (widget.session.hasLocalFile
+                              ? 'Replay Through Server'
+                              : 'Refresh From Server'),
                     icon: Icons.refresh_rounded,
                     onPressed: _sending ? null : _sendSavedSessionToServer,
                     loading: _sending,
-                  ),
-                ),
-                SizedBox(
-                  width: wide ? 220 : double.infinity,
-                  child: _uniformActionButton(
-                    label: _exportingJson ? 'Exporting JSON...' : 'Export JSON',
-                    icon: Icons.data_object_rounded,
-                    onPressed: _exportingJson ? null : _exportSessionJson,
-                    loading: _exportingJson,
-                  ),
-                ),
-                SizedBox(
-                  width: wide ? 220 : double.infinity,
-                  child: _uniformActionButton(
-                    label: _exportingCsv ? 'Exporting CSV...' : 'Export CSV',
-                    icon: Icons.table_chart_outlined,
-                    onPressed: _exportingCsv ? null : _exportSessionCsv,
-                    loading: _exportingCsv,
                   ),
                 ),
               ],
@@ -1094,7 +1062,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   Widget _buildSessionInfoCard() {
     final firstTs = _firstTimestamp();
     final lastTs = _lastTimestamp();
-    final testTitle = _preferredTestTitle();
 
     return _card(
       child: Column(
@@ -1151,15 +1118,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                       icon: Icons.phone_android_outlined,
                     ),
                   ),
-                  if (testTitle != null)
-                    SizedBox(
-                      width: width,
-                      child: _metricBox(
-                        label: 'Test',
-                        value: testTitle,
-                        icon: Icons.assignment_outlined,
-                      ),
-                    ),
                 ],
               );
             },
@@ -1800,8 +1758,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
             const SizedBox(height: 16),
             _buildInferenceResultCard(),
             const SizedBox(height: 16),
-            _buildSensorGraphCard(),
-            const SizedBox(height: 16),
             _buildNarrativeCard(),
             const SizedBox(height: 16),
             _buildTimelineCard(),
@@ -1838,8 +1794,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
 
   @override
   Widget build(BuildContext context) {
-    final payload = _payload;
-
     return Scaffold(
       backgroundColor: _pageBackground,
       appBar: AppBar(
@@ -1863,45 +1817,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       body: SafeArea(
         child: _loading
             ? const Center(child: CircularProgressIndicator())
-            : payload == null
-            ? Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 680),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: _card(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          _sectionTitle(
-                            'Session Load Failed',
-                            'This saved session could not be parsed safely.',
-                          ),
-                          Text(
-                            _status,
-                            style: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: _textPrimary,
-                              height: 1.4,
-                            ),
-                          ),
-                          const SizedBox(height: 18),
-                          SizedBox(
-                            width: 240,
-                            child: _uniformActionButton(
-                              label: 'Back to Sessions',
-                              icon: Icons.folder_open_rounded,
-                              onPressed: _openSavedSessions,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              )
             : Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 1220),
@@ -1916,19 +1831,6 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 }
 
-String? _trimmedText(dynamic value) {
-  if (value == null) {
-    return null;
-  }
-
-  final text = value.toString().trim();
-  if (text.isEmpty) {
-    return null;
-  }
-
-  return text;
-}
-
 double? _asDouble(dynamic value) {
   if (value == null) {
     return null;
@@ -1937,161 +1839,4 @@ double? _asDouble(dynamic value) {
     return value.toDouble();
   }
   return double.tryParse(value.toString());
-}
-
-class _SensorGraphPainter extends CustomPainter {
-  _SensorGraphPainter({
-    required this.samples,
-    required this.showMagnitude,
-    required this.borderColor,
-    required this.axisColor,
-    required this.axColor,
-    required this.ayColor,
-    required this.azColor,
-    required this.magnitudeColor,
-  });
-
-  final List<SensorSample> samples;
-  final bool showMagnitude;
-  final Color borderColor;
-  final Color axisColor;
-  final Color axColor;
-  final Color ayColor;
-  final Color azColor;
-  final Color magnitudeColor;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (samples.length < 2) {
-      return;
-    }
-
-    const leftPad = 8.0;
-    const rightPad = 8.0;
-    const topPad = 10.0;
-    const bottomPad = 10.0;
-
-    final chartRect = Rect.fromLTWH(
-      leftPad,
-      topPad,
-      size.width - leftPad - rightPad,
-      size.height - topPad - bottomPad,
-    );
-
-    final backgroundPaint = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.fill;
-
-    final borderPaint = Paint()
-      ..color = borderColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1;
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(chartRect, const Radius.circular(12)),
-      backgroundPaint,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(chartRect, const Radius.circular(12)),
-      borderPaint,
-    );
-
-    final values = <double>[];
-    for (final sample in samples) {
-      values.add(sample.ax);
-      values.add(sample.ay);
-      values.add(sample.az);
-      if (showMagnitude) {
-        values.add(
-          math.sqrt(
-            (sample.ax * sample.ax) +
-                (sample.ay * sample.ay) +
-                (sample.az * sample.az),
-          ),
-        );
-      }
-    }
-
-    double minValue = values.reduce(math.min);
-    double maxValue = values.reduce(math.max);
-
-    if ((maxValue - minValue).abs() < 0.0001) {
-      maxValue += 1;
-      minValue -= 1;
-    }
-
-    final range = maxValue - minValue;
-    final firstTs = samples.first.timestamp;
-    final lastTs = samples.last.timestamp;
-    final timeSpan = (lastTs - firstTs).abs() < 0.0001
-        ? 1.0
-        : (lastTs - firstTs);
-
-    final zeroY =
-        chartRect.bottom - ((0 - minValue) / range) * chartRect.height;
-    final axisPaint = Paint()
-      ..color = axisColor.withValues(alpha: 0.35)
-      ..strokeWidth = 1;
-
-    if (zeroY >= chartRect.top && zeroY <= chartRect.bottom) {
-      canvas.drawLine(
-        Offset(chartRect.left, zeroY),
-        Offset(chartRect.right, zeroY),
-        axisPaint,
-      );
-    }
-
-    void drawSeries(
-      double Function(SensorSample sample) selector,
-      Color color,
-    ) {
-      final path = Path();
-
-      for (var i = 0; i < samples.length; i++) {
-        final sample = samples[i];
-        final dx =
-            chartRect.left +
-            ((sample.timestamp - firstTs) / timeSpan) * chartRect.width;
-        final value = selector(sample);
-        final dy =
-            chartRect.bottom - ((value - minValue) / range) * chartRect.height;
-
-        if (i == 0) {
-          path.moveTo(dx, dy);
-        } else {
-          path.lineTo(dx, dy);
-        }
-      }
-
-      final paint = Paint()
-        ..color = color
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round;
-
-      canvas.drawPath(path, paint);
-    }
-
-    drawSeries((sample) => sample.ax, axColor);
-    drawSeries((sample) => sample.ay, ayColor);
-    drawSeries((sample) => sample.az, azColor);
-
-    if (showMagnitude) {
-      drawSeries(
-        (sample) => math.sqrt(
-          (sample.ax * sample.ax) +
-              (sample.ay * sample.ay) +
-              (sample.az * sample.az),
-        ),
-        magnitudeColor,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _SensorGraphPainter oldDelegate) {
-    return oldDelegate.samples != samples ||
-        oldDelegate.showMagnitude != showMagnitude;
-  }
 }

@@ -1,14 +1,14 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart'
-    show TargetPlatform, defaultTargetPlatform, debugPrint, kDebugMode, kIsWeb;
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
-import '../data/test_definitions.dart';
+import '../config/runtime_config.dart';
 import '../models/sensor_sample.dart';
 import '../services/runtime_api_service.dart';
+import '../services/runtime_identity_service.dart';
 import '../services/sensor_recorder.dart';
 import '../services/session_storage_service.dart';
 import 'saved_sessions_page.dart';
@@ -23,10 +23,10 @@ class RuntimeHomePage extends StatefulWidget {
 }
 
 class _RuntimeHomePageState extends State<RuntimeHomePage> {
-  static const String _baseUrl = 'http://192.168.1.50:8000';
-
-  static const Color _accent = Color(0xFFC14953);
-  static const Color _pageBackground = Color(0xFF848FA5);
+  static const Color _accent = Color(0xFFC14953); // buttons / selected tab
+  static const Color _pageBackground = Color(
+    0xFF848FA5,
+  ); // whole app background
   static const Color _cardBackground = Color(0xFFF9FAFC);
   static const Color _softBackground = Color(0xFFF1F3F7);
   static const Color _border = Color(0xFFD8DEE8);
@@ -44,17 +44,14 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     'unknown',
   ];
 
-  final RuntimeApiService _api = RuntimeApiService(baseUrl: _baseUrl);
+  RuntimeApiService? _api;
   final SensorRecorderService _recorder = SensorRecorderService();
   final SessionStorageService _storage = SessionStorageService();
 
-  final TextEditingController _subjectController = TextEditingController(
-    text: 'joel',
-  );
+  final TextEditingController _subjectController = TextEditingController();
 
   String _selectedPlacement = 'pocket';
-  String _selectedTestId = kTestDefinitions.first.id;
-  int _selectedSection = 1; // 0 monitor, 1 session, 2 checks
+  int _selectedSection = 0; // 0 monitor, 1 session, 2 checks
 
   String? _savedSessionsDirPath;
   String? _savedSessionsDirError;
@@ -72,24 +69,17 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   RuntimeHealthResponse? _health;
   ApiResultSummary? _result;
 
-  void _log(String message) {
-    if (kDebugMode) {
-      debugPrint('[RuntimeHomePage] $message');
-    }
-  }
-
   @override
   void initState() {
     super.initState();
-    _status = 'Ready for local recording.';
-    _log('Runtime home initialised');
+    _bootstrapIdentityAndHealth();
     _refreshSavedSessionsPath();
   }
 
   @override
   void dispose() {
-    _api.dispose();
-    unawaited(_recorder.dispose());
+    _api?.dispose();
+    _recorder.dispose();
     _subjectController.dispose();
     super.dispose();
   }
@@ -118,27 +108,73 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
   String _normalisedPlacement() => _selectedPlacement;
 
-  TestDefinition get _selectedTest =>
-      kTestDefinitions.firstWhere((test) => test.id == _selectedTestId);
-
-  String _recordingStatusText() {
-    final test = _selectedTest;
-    if (_recorder.isRecording) {
-      return 'Recording: ${test.title}';
-    }
-    return 'Ready to record: ${test.title}';
-  }
-
-  Future<void> _checkHealth() async {
+  Future<void> _bootstrapIdentityAndHealth() async {
     if (!mounted) return;
 
     setState(() {
       _isCheckingHealth = true;
-      _status = 'Checking server health...';
+      _status = 'Setting up your personal account...';
     });
 
     try {
-      final health = await _api.checkHealth();
+      final identity = await RuntimeIdentityService.instance.ensureIdentity();
+      _api?.dispose();
+      _api = RuntimeApiService(
+        baseUrl: runtimeApiBaseUrl,
+        basicAuthUsername: identity.username,
+        basicAuthPassword: identity.password,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _subjectController.text = identity.subjectId;
+        _status = 'Account ready. Checking server health...';
+      });
+
+      await _runHealthCheck(updateStatus: false);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _health = null;
+        _serverHealthy = false;
+        _status = 'Failed to prepare your account: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCheckingHealth = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _checkHealth() async {
+    await _runHealthCheck(updateStatus: true);
+  }
+
+  Future<void> _runHealthCheck({required bool updateStatus}) async {
+    final api = _api;
+    if (api == null) {
+      if (mounted && updateStatus) {
+        setState(() {
+          _health = null;
+          _serverHealthy = false;
+          _status = 'Your account is not ready yet.';
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+
+    if (updateStatus) {
+      setState(() {
+        _isCheckingHealth = true;
+        _status = 'Checking server health...';
+      });
+    }
+
+    try {
+      final health = await api.checkHealth();
 
       if (!mounted) return;
       setState(() {
@@ -156,7 +192,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
         _status = 'Health check failed: $e';
       });
     } finally {
-      if (mounted) {
+      if (mounted && updateStatus) {
         setState(() {
           _isCheckingHealth = false;
         });
@@ -166,7 +202,6 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
   Future<void> _refreshSavedSessionsPath({bool updateStatus = false}) async {
     try {
-      _log('Resolving saved sessions directory');
       final path = await _storage.getSavedSessionsDirectoryPath();
       if (!mounted) return;
       setState(() {
@@ -176,9 +211,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
           _status = 'Saved sessions directory: $path';
         }
       });
-      _log('Saved sessions directory: $path');
     } catch (e) {
-      _log('Failed to resolve saved sessions directory: $e');
       if (!mounted) return;
       setState(() {
         _savedSessionsDirPath = null;
@@ -243,37 +276,28 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   Future<void> _stopRecording() async {
-    final selectedTest = _selectedTest;
-
     try {
       await _recorder.stop();
 
       final path = await _recorder.saveSessionLocally(
         subjectId: _normalisedSubjectId(),
         placement: _normalisedPlacement(),
-        testId: selectedTest.id,
-        testTitle: selectedTest.title,
-        extraNotes: selectedTest.instructions,
       );
 
       await _refreshSavedSessionsPath();
       if (!mounted) return;
-
       setState(() {
         if (path == null) {
-          _status =
-              'Recording stopped for ${selectedTest.title}. No samples saved.';
+          _status = 'Recording stopped. No samples saved.';
           _recordSaveOutcome(
             outcome: _SaveOutcome.skipped,
-            status:
-                'No samples were available to save for ${selectedTest.title}.',
+            status: 'No samples were available to save.',
           );
         } else {
-          _status =
-              'Recording stopped for ${selectedTest.title}. Saved locally at $path';
+          _status = 'Recording stopped. Saved locally at $path';
           _recordSaveOutcome(
             outcome: _SaveOutcome.success,
-            status: 'Saved ${selectedTest.title} session to disk.',
+            status: 'Saved session to disk.',
             savedPath: path,
           );
         }
@@ -281,16 +305,24 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _status = 'Failed to stop recording for ${selectedTest.title}: $e';
+        _status = 'Failed to stop recording: $e';
         _recordSaveOutcome(
           outcome: _SaveOutcome.failed,
-          status: 'Save failed for ${selectedTest.title}: $e',
+          status: 'Save failed: $e',
         );
       });
     }
   }
 
   Future<void> _sendForInference() async {
+    final api = _api;
+    if (api == null) {
+      setState(() {
+        _status =
+            'Your account is still being prepared. Try again in a moment.';
+      });
+      return;
+    }
     if (_recorder.samples.isEmpty) {
       setState(() {
         _status = 'No samples recorded yet.';
@@ -306,7 +338,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     });
 
     try {
-      final summary = await _api.submitSession(
+      final summary = await api.submitSession(
         sessionId: sessionId,
         subjectId: _normalisedSubjectId(),
         placement: _normalisedPlacement(),
@@ -340,6 +372,14 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   Future<void> _sendBundledDemoSession() async {
+    final api = _api;
+    if (api == null) {
+      setState(() {
+        _status =
+            'Your account is still being prepared. Try again in a moment.';
+      });
+      return;
+    }
     setState(() {
       _isSending = true;
       _status = 'Sending bundled demo session...';
@@ -369,7 +409,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
       final sessionId = (metadata['session_id'] as String?) ?? _newSessionId();
 
-      final summary = await _api.submitSession(
+      final summary = await api.submitSession(
         sessionId: sessionId,
         subjectId: (metadata['subject_id'] as String?) ?? 'demo_user',
         placement: ((metadata['placement'] as String?) ?? 'pocket')
@@ -459,6 +499,14 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   Future<void> _submitFeedback(String feedback) async {
+    final api = _api;
+    if (api == null) {
+      setState(() {
+        _status =
+            'Your account is still being prepared. Try again in a moment.';
+      });
+      return;
+    }
     final result = _result;
     if (result == null) {
       return;
@@ -470,8 +518,12 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     });
 
     try {
-      final ack = await _api.submitFeedback(
+      final ack = await api.submitFeedback(
         sessionId: result.sessionId,
+        subjectId: _normalisedSubjectId(),
+        persistedSessionId: result.persistedSessionId,
+        persistedInferenceId: result.persistedInferenceId,
+        targetType: 'session',
         userFeedback: feedback,
       );
 
@@ -498,9 +550,12 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   Future<void> _openSavedSessions() async {
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => const SavedSessionsPage()));
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            SavedSessionsPage(initialSubjectId: _normalisedSubjectId()),
+      ),
+    );
   }
 
   Color _levelColor(String level) {
@@ -812,22 +867,12 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                       background: Colors.white.withValues(alpha: 0.16),
                     ),
                     _chip(
-                      label: _health == null
-                          ? 'Server Not Checked'
-                          : (_serverHealthy
-                                ? 'Server Ready'
-                                : 'Server Offline'),
+                      label: _serverHealthy ? 'Server Ready' : 'Server Offline',
                       textColor: Colors.white,
-                      icon: _health == null
-                          ? Icons.help_outline
-                          : (_serverHealthy
-                                ? Icons.cloud_done
-                                : Icons.cloud_off),
-                      background: _health == null
-                          ? Colors.white.withValues(alpha: 0.16)
-                          : (_serverHealthy
-                                ? _success.withValues(alpha: 0.32)
-                                : _danger.withValues(alpha: 0.26)),
+                      icon: _serverHealthy ? Icons.cloud_done : Icons.cloud_off,
+                      background: _serverHealthy
+                          ? _success.withValues(alpha: 0.32)
+                          : _danger.withValues(alpha: 0.26),
                     ),
                   ],
                 ),
@@ -1028,21 +1073,16 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                         child: _uniformActionButton(
                           label: 'Run Demo Session',
                           icon: Icons.bolt_outlined,
-                          onPressed:
-                              (!_recorder.supportsLiveSensors &&
-                                  !_isSending &&
-                                  !isRecording)
-                              ? _sendBundledDemoSession
-                              : null,
+                          onPressed: (_isSending || isRecording)
+                              ? null
+                              : _sendBundledDemoSession,
                           primary: !liveSensorsSupported,
                         ),
                       ),
                       SizedBox(
                         width: width,
                         child: _uniformActionButton(
-                          label: _isSending
-                              ? 'Sending...'
-                              : 'Send Recording to Server',
+                          label: _isSending ? 'Sending...' : 'Send to Server',
                           icon: Icons.cloud_upload_outlined,
                           onPressed:
                               (_isSending ||
@@ -1320,162 +1360,6 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     );
   }
 
-  Widget _buildSelectedTestSummary() {
-    final test = _selectedTest;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _softBackground,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Selected Test',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: _textSecondary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            test.title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              color: _textPrimary,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            test.instructions,
-            style: const TextStyle(
-              fontSize: 14,
-              height: 1.4,
-              color: _textPrimary,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _chip(
-                label: '${test.suggestedDurationSeconds}s',
-                textColor: _textPrimary,
-                icon: Icons.timer_outlined,
-                background: Colors.white,
-              ),
-              _chip(
-                label: test.isFallRelated
-                    ? 'Fall-related'
-                    : 'ADL / normal motion',
-                textColor: test.isFallRelated ? _warning : _success,
-                icon: test.isFallRelated
-                    ? Icons.warning_amber_rounded
-                    : Icons.verified_outlined,
-                background: Colors.white,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Safety: ${test.safetyNote}',
-            style: const TextStyle(
-              fontSize: 13,
-              color: _textSecondary,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTestCard(TestDefinition test) {
-    final isSelected = test.id == _selectedTestId;
-
-    return InkWell(
-      borderRadius: BorderRadius.circular(18),
-      onTap: () {
-        setState(() {
-          _selectedTestId = test.id;
-          _status = 'Selected test: ${test.title}';
-        });
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected ? _accent.withValues(alpha: 0.10) : _softBackground,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: isSelected ? _accent : _border,
-            width: isSelected ? 1.5 : 1,
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    test.title,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w800,
-                      color: _textPrimary,
-                    ),
-                  ),
-                ),
-                if (isSelected)
-                  const Icon(Icons.check_circle, color: _accent, size: 20),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text(
-              test.instructions,
-              style: const TextStyle(
-                fontSize: 13,
-                height: 1.35,
-                color: _textSecondary,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _chip(
-                  label: '${test.suggestedDurationSeconds}s',
-                  textColor: _textPrimary,
-                  icon: Icons.timer_outlined,
-                  background: Colors.white,
-                ),
-                _chip(
-                  label: test.isFallRelated ? 'Fall' : 'Normal',
-                  textColor: test.isFallRelated ? _warning : _success,
-                  icon: test.isFallRelated
-                      ? Icons.warning_amber_rounded
-                      : Icons.directions_walk_rounded,
-                  background: Colors.white,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildSessionTab() {
     return _card(
       child: Column(
@@ -1483,13 +1367,15 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
         children: [
           _sectionTitle(
             'Session Setup',
-            'Choose a test, set subject details, and prepare for local recording.',
+            'Your account is assigned automatically on first launch. Only placement is editable here.',
           ),
           TextField(
             controller: _subjectController,
+            readOnly: true,
             decoration: const InputDecoration(
               labelText: 'Subject ID',
               prefixIcon: Icon(Icons.person_outline),
+              helperText: 'Generated for this device during first launch.',
             ),
           ),
           const SizedBox(height: 14),
@@ -1518,45 +1404,6 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
             },
           ),
           const SizedBox(height: 16),
-          _buildSelectedTestSummary(),
-          const SizedBox(height: 18),
-          const Text(
-            'Test List',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w800,
-              color: _textPrimary,
-            ),
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'Tap a test below before recording on your phone.',
-            style: TextStyle(
-              fontSize: 14,
-              color: _textSecondary,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 14),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              const gap = 12.0;
-              final cols = constraints.maxWidth >= 900 ? 2 : 1;
-              final width = (constraints.maxWidth - gap * (cols - 1)) / cols;
-
-              return Wrap(
-                spacing: gap,
-                runSpacing: gap,
-                children: kTestDefinitions
-                    .map(
-                      (test) =>
-                          SizedBox(width: width, child: _buildTestCard(test)),
-                    )
-                    .toList(),
-              );
-            },
-          ),
-          const SizedBox(height: 16),
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
@@ -1566,12 +1413,11 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
               border: Border.all(color: _border),
             ),
             child: Text(
-              'Current session: ${_activeSessionId ?? '-'}\n${_recordingStatusText()}',
+              'Current session: ${_activeSessionId ?? '-'}',
               style: const TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
                 color: _textPrimary,
-                height: 1.45,
               ),
             ),
           ),
@@ -1598,15 +1444,9 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                 runSpacing: 10,
                 children: [
                   _chip(
-                    label: _health == null
-                        ? 'Not Checked'
-                        : (_serverHealthy ? 'Healthy' : 'Unavailable'),
-                    textColor: _health == null
-                        ? _textPrimary
-                        : (_serverHealthy ? _success : _danger),
-                    icon: _health == null
-                        ? Icons.help_outline
-                        : (_serverHealthy ? Icons.cloud_done : Icons.cloud_off),
+                    label: _serverHealthy ? 'Healthy' : 'Unavailable',
+                    textColor: _serverHealthy ? _success : _danger,
+                    icon: _serverHealthy ? Icons.cloud_done : Icons.cloud_off,
                   ),
                   _chip(
                     label: _healthText(),

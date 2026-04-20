@@ -99,25 +99,6 @@ class SensorSample {
     );
   }
 
-  static SensorSample? tryFromJson(
-    dynamic json, {
-    void Function(String message)? onInvalid,
-  }) {
-    if (json is! Map) {
-      onInvalid?.call('Sample is not a JSON object.');
-      return null;
-    }
-
-    try {
-      return SensorSample.fromJson(
-        json.map((key, value) => MapEntry(key.toString(), value)),
-      );
-    } catch (error) {
-      onInvalid?.call(error.toString());
-      return null;
-    }
-  }
-
   static double _parseRequiredDouble(dynamic value, String fieldName) {
     final parsed = _parseOptionalDouble(value, fieldName);
     if (parsed == null) {

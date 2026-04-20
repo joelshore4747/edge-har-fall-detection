@@ -1,12 +1,16 @@
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 
+import '../config/runtime_config.dart';
 import '../models/saved_session.dart';
+import '../services/runtime_api_service.dart';
+import '../services/runtime_identity_service.dart';
 import '../services/session_storage_service.dart';
 import 'session_detail_page.dart';
 
 class SavedSessionsPage extends StatefulWidget {
-  const SavedSessionsPage({super.key});
+  const SavedSessionsPage({super.key, this.initialSubjectId});
+
+  final String? initialSubjectId;
 
   @override
   State<SavedSessionsPage> createState() => _SavedSessionsPageState();
@@ -25,21 +29,40 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
   static const Color _warning = Color(0xFFE79A1F);
 
   final SessionStorageService _storage = SessionStorageService();
+  RuntimeApiService? _api;
 
   bool _loading = true;
   String? _errorMessage;
+  Object? _bootstrapError;
   List<SavedSession> _sessions = const <SavedSession>[];
-
-  void _log(String message) {
-    if (kDebugMode) {
-      debugPrint('[SavedSessionsPage] $message');
-    }
-  }
 
   @override
   void initState() {
     super.initState();
-    _loadSessions();
+    _bootstrapAndLoadSessions();
+  }
+
+  @override
+  void dispose() {
+    _api?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _bootstrapAndLoadSessions() async {
+    try {
+      final identity = await RuntimeIdentityService.instance.ensureIdentity();
+      _api?.dispose();
+      _api = RuntimeApiService(
+        baseUrl: runtimeApiBaseUrl,
+        basicAuthUsername: identity.username,
+        basicAuthPassword: identity.password,
+      );
+      _bootstrapError = null;
+    } catch (e) {
+      _bootstrapError = e;
+    }
+
+    await _loadSessions();
   }
 
   Future<void> _loadSessions() async {
@@ -50,25 +73,51 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
       _errorMessage = null;
     });
 
+    List<SavedSession> localSessions = const <SavedSession>[];
+    Object? localError;
     try {
-      _log('Loading saved sessions list');
-      final sessions = await _storage.listSessions();
-
-      if (!mounted) return;
-      setState(() {
-        _sessions = sessions;
-        _loading = false;
-      });
-      _log('Loaded ${sessions.length} saved session(s)');
+      localSessions = await _storage.listSessions();
     } catch (e) {
-      _log('Failed to load saved sessions: $e');
-      if (!mounted) return;
-      setState(() {
-        _sessions = const <SavedSession>[];
-        _loading = false;
-        _errorMessage = 'Failed to load saved sessions: $e';
-      });
+      localError = e;
     }
+
+    List<SavedSession> remoteSessions = const <SavedSession>[];
+    Object? remoteError;
+    try {
+      final api = _api;
+      if (api == null) {
+        throw _bootstrapError ?? StateError('Your account is not ready yet.');
+      }
+      final persisted = await api.listPersistedSessions(
+        subjectId: widget.initialSubjectId,
+        limit: 100,
+        offset: 0,
+      );
+      remoteSessions = persisted
+          .map(SavedSession.fromPersistedSummary)
+          .toList(growable: false);
+    } catch (e) {
+      remoteError = e;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _sessions = _mergeSessions(
+        localSessions: localSessions,
+        remoteSessions: remoteSessions,
+      );
+      _loading = false;
+      if (localError != null && remoteError != null) {
+        _errorMessage =
+            'Failed to load local sessions ($localError) and remote history ($remoteError).';
+      } else if (localError != null) {
+        _errorMessage = 'Failed to load local sessions: $localError';
+      } else if (remoteError != null) {
+        _errorMessage = 'Remote history unavailable: $remoteError';
+      } else {
+        _errorMessage = null;
+      }
+    });
   }
 
   Future<void> _openSession(SavedSession session) async {
@@ -80,6 +129,15 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
   }
 
   Future<void> _deleteSession(SavedSession session) async {
+    if (!session.hasLocalFile) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This session exists only on the server.'),
+        ),
+      );
+      return;
+    }
+
     final confirmed =
         await showDialog<bool>(
           context: context,
@@ -109,7 +167,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     }
 
     try {
-      await _storage.deleteSession(session.filePath);
+      await _storage.deleteSession(session.filePath!);
       await _loadSessions();
 
       if (!mounted) return;
@@ -137,6 +195,58 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     return label;
   }
 
+  List<SavedSession> _mergeSessions({
+    required List<SavedSession> localSessions,
+    required List<SavedSession> remoteSessions,
+  }) {
+    final merged = <SavedSession>[];
+    final localByPersistedId = <String, SavedSession>{};
+    final unmatchedLocal = <SavedSession>[];
+
+    for (final session in localSessions) {
+      final persistedId = session.persistedSessionId;
+      if (persistedId != null && persistedId.trim().isNotEmpty) {
+        localByPersistedId[persistedId] = session;
+      } else {
+        unmatchedLocal.add(session);
+      }
+    }
+
+    for (final remote in remoteSessions) {
+      final persistedId = remote.persistedSessionId;
+      final localMatch = persistedId == null
+          ? null
+          : localByPersistedId.remove(persistedId);
+
+      if (localMatch == null) {
+        merged.add(remote);
+        continue;
+      }
+
+      final savedAt = remote.savedAt.isAfter(localMatch.savedAt)
+          ? remote.savedAt
+          : localMatch.savedAt;
+
+      merged.add(
+        localMatch.copyWith(
+          subjectId: remote.subjectId,
+          placement: remote.placement,
+          sampleCount: remote.sampleCount,
+          savedAt: savedAt,
+          persistedUserId: remote.persistedUserId,
+          persistedSessionId: remote.persistedSessionId,
+          persistedInferenceId: remote.persistedInferenceId,
+          isRemote: true,
+        ),
+      );
+    }
+
+    merged.addAll(localByPersistedId.values);
+    merged.addAll(unmatchedLocal);
+    merged.sort((a, b) => b.savedAt.compareTo(a.savedAt));
+    return merged;
+  }
+
   Color _labelColor(SavedSession session) {
     final label = session.activityLabel?.trim().toLowerCase();
     switch (label) {
@@ -153,33 +263,6 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
       default:
         return _warning;
     }
-  }
-
-  String? _testTitleFromNotes(SavedSession session) {
-    final notes = session.notes?.trim();
-    if (notes == null || notes.isEmpty) {
-      return null;
-    }
-
-    for (final part in notes.split(' | ')) {
-      if (part.startsWith('test_title=')) {
-        final value = part.substring('test_title='.length).trim();
-        if (value.isNotEmpty) {
-          return value;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  String? _preferredTestTitle(SavedSession session) {
-    final savedTitle = session.testTitle?.trim();
-    if (savedTitle != null && savedTitle.isNotEmpty) {
-      return savedTitle;
-    }
-
-    return _testTitleFromNotes(session);
   }
 
   Widget _chip({
@@ -298,7 +381,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  'LOCAL STORAGE',
+                  'SAVED + SYNCED',
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
@@ -327,7 +410,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
                 const SizedBox(height: 10),
                 Text(
                   _errorMessage ??
-                      'Browse recorded or replayed sessions, then open them for annotation and review.',
+                      'Browse local recordings and server-synced sessions, then open them for annotation and review.',
                   style: const TextStyle(
                     fontSize: 15,
                     height: 1.45,
@@ -428,7 +511,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
         children: [
           _sectionTitle(
             'Saved Sessions',
-            'Your local session list will appear here.',
+            'Local files and synced server sessions appear here.',
           ),
           Container(
             width: double.infinity,
@@ -456,7 +539,7 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
                 ),
                 SizedBox(height: 6),
                 Text(
-                  'Run a demo session or record on mobile to create your first local session file.',
+                  'Record on mobile or submit a session to the backend to populate this history.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -479,7 +562,6 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
     final hasPlacementLabel =
         session.placementLabel != null &&
         session.placementLabel!.trim().isNotEmpty;
-    final testTitle = _preferredTestTitle(session);
 
     return InkWell(
       borderRadius: BorderRadius.circular(24),
@@ -552,12 +634,15 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
                 final trailing = Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    IconButton(
-                      onPressed: () => _deleteSession(session),
-                      icon: const Icon(Icons.delete_outline_rounded),
-                      color: _danger,
-                      tooltip: 'Delete',
-                    ),
+                    if (session.hasLocalFile)
+                      IconButton(
+                        onPressed: () => _deleteSession(session),
+                        icon: const Icon(Icons.delete_outline_rounded),
+                        color: _danger,
+                        tooltip: 'Delete local file',
+                      )
+                    else
+                      const Icon(Icons.cloud_done_outlined, color: _success),
                     const Icon(
                       Icons.chevron_right_rounded,
                       color: _textSecondary,
@@ -596,18 +681,25 @@ class _SavedSessionsPageState extends State<SavedSessionsPage> {
                   textColor: activityChipColor,
                   background: activityChipColor.withValues(alpha: 0.10),
                 ),
+                if (session.hasPersistedSession)
+                  _chip(
+                    label: 'Server synced',
+                    textColor: _success,
+                    icon: Icons.cloud_done_outlined,
+                    background: _success.withValues(alpha: 0.10),
+                  ),
+                if (session.hasLocalFile)
+                  _chip(
+                    label: 'Local file',
+                    textColor: _textSecondary,
+                    icon: Icons.folder_open_rounded,
+                    background: _softBackground,
+                  ),
                 if (hasPlacementLabel)
                   _chip(
                     label: 'Placement label: ${session.placementLabel}',
                     textColor: _textPrimary,
                     background: _softBackground,
-                  ),
-                if (testTitle != null)
-                  _chip(
-                    label: testTitle,
-                    textColor: _accent,
-                    icon: Icons.assignment_outlined,
-                    background: _accent.withValues(alpha: 0.10),
                   ),
                 if (session.notes != null && session.notes!.trim().isNotEmpty)
                   _chip(

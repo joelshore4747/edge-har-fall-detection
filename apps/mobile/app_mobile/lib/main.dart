@@ -1,45 +1,9 @@
-import 'dart:async';
-import 'dart:ui';
-
 import 'package:flutter/material.dart';
 
 import 'pages/runtime_home_page.dart';
 
 void main() {
-  runZonedGuarded(
-    () {
-      WidgetsFlutterBinding.ensureInitialized();
-
-      FlutterError.onError = (FlutterErrorDetails details) {
-        debugPrint('[AppStartup] FlutterError: ${details.exceptionAsString()}');
-        debugPrintStack(
-          stackTrace: details.stack,
-          label: '[AppStartup] FlutterError stack',
-        );
-        FlutterError.presentError(details);
-      };
-
-      PlatformDispatcher.instance.onError =
-          (Object error, StackTrace stackTrace) {
-            debugPrint('[AppStartup] PlatformDispatcher error: $error');
-            debugPrintStack(
-              stackTrace: stackTrace,
-              label: '[AppStartup] PlatformDispatcher stack',
-            );
-            return true;
-          };
-
-      debugPrint('[AppStartup] Launching FallMonitorApp');
-      runApp(const FallMonitorApp());
-    },
-    (Object error, StackTrace stackTrace) {
-      debugPrint('[AppStartup] Uncaught zone error: $error');
-      debugPrintStack(
-        stackTrace: stackTrace,
-        label: '[AppStartup] Uncaught zone stack',
-      );
-    },
-  );
+  runApp(const FallMonitorApp());
 }
 
 class FallMonitorApp extends StatelessWidget {

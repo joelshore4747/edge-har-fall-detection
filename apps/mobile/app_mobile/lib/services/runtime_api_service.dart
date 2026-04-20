@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/api_result_summary.dart';
+import '../models/persisted_session.dart';
 import '../models/sensor_sample.dart';
 
 class RuntimeApiException implements Exception {
@@ -42,6 +43,32 @@ class RuntimeHealthResponse {
   }
 }
 
+class RuntimeRegistrationResponse {
+  RuntimeRegistrationResponse({
+    required this.status,
+    required this.username,
+    required this.subjectId,
+    required this.created,
+    this.displayName,
+  });
+
+  final String status;
+  final String username;
+  final String subjectId;
+  final String? displayName;
+  final bool created;
+
+  factory RuntimeRegistrationResponse.fromJson(Map<String, dynamic> json) {
+    return RuntimeRegistrationResponse(
+      status: _asString(json['status']) ?? 'registered',
+      username: _asString(json['username']) ?? '',
+      subjectId: _asString(json['subject_id']) ?? '',
+      displayName: _asString(json['display_name']),
+      created: json['created'] as bool? ?? true,
+    );
+  }
+}
+
 class RuntimeFeedbackAck {
   RuntimeFeedbackAck({
     required this.sessionId,
@@ -49,6 +76,10 @@ class RuntimeFeedbackAck {
     required this.message,
     required this.status,
     this.requestId,
+    this.persistedSessionId,
+    this.persistedInferenceId,
+    this.persistedFeedbackId,
+    this.targetType,
     this.eventId,
     this.windowId,
     this.recordedAt,
@@ -56,6 +87,10 @@ class RuntimeFeedbackAck {
 
   final String? requestId;
   final String sessionId;
+  final String? persistedSessionId;
+  final String? persistedInferenceId;
+  final String? persistedFeedbackId;
+  final String? targetType;
   final String? eventId;
   final String? windowId;
   final String userFeedback;
@@ -67,6 +102,10 @@ class RuntimeFeedbackAck {
     return RuntimeFeedbackAck(
       requestId: _asString(json['request_id']),
       sessionId: _asString(json['session_id']) ?? '',
+      persistedSessionId: _asString(json['persisted_session_id']),
+      persistedInferenceId: _asString(json['persisted_inference_id']),
+      persistedFeedbackId: _asString(json['persisted_feedback_id']),
+      targetType: _asString(json['target_type']),
       eventId: _asString(json['event_id']),
       windowId: _asString(json['window_id']),
       userFeedback: _asString(json['user_feedback']) ?? 'unknown',
@@ -80,13 +119,20 @@ class RuntimeFeedbackAck {
 class RuntimeApiService {
   RuntimeApiService({
     required String baseUrl,
+    String? basicAuthUsername,
+    String? basicAuthPassword,
     http.Client? client,
     Duration? timeout,
   }) : _baseUrl = _normaliseBaseUrl(baseUrl),
+       _basicAuthHeader = _buildBasicAuthHeader(
+         username: basicAuthUsername,
+         password: basicAuthPassword,
+       ),
        _client = client ?? http.Client(),
        _timeout = timeout ?? const Duration(seconds: 30);
 
   final String _baseUrl;
+  final String? _basicAuthHeader;
   final http.Client _client;
   final Duration _timeout;
 
@@ -99,7 +145,9 @@ class RuntimeApiService {
 
     http.Response response;
     try {
-      response = await _client.get(uri).timeout(_timeout);
+      response = await _client
+          .get(uri, headers: _requestHeaders())
+          .timeout(_timeout);
     } on TimeoutException {
       throw RuntimeApiException('Health check timed out.');
     } catch (e) {
@@ -117,6 +165,29 @@ class RuntimeApiService {
     }
 
     return RuntimeHealthResponse.fromJson(payload);
+  }
+
+  Future<RuntimeRegistrationResponse> registerSelfServiceUser({
+    required String username,
+    required String password,
+    required String subjectId,
+    String? displayName,
+    String devicePlatform = 'mobile_app',
+    String? deviceModel,
+    String? appVersion,
+    String? appBuild,
+  }) async {
+    final json = await _postJson('/v1/auth/register', <String, dynamic>{
+      'username': username,
+      'password': password,
+      'subject_id': subjectId,
+      'display_name': displayName,
+      'device_platform': devicePlatform,
+      'device_model': deviceModel,
+      'app_version': appVersion,
+      'app_build': appBuild,
+    });
+    return RuntimeRegistrationResponse.fromJson(json);
   }
 
   Future<ApiResultSummary> submitSession({
@@ -199,6 +270,10 @@ class RuntimeApiService {
   Future<RuntimeFeedbackAck> submitFeedback({
     required String sessionId,
     required String userFeedback,
+    String? subjectId,
+    String? persistedSessionId,
+    String? persistedInferenceId,
+    String? targetType,
     String? eventId,
     String? windowId,
     String? correctedLabel,
@@ -209,6 +284,10 @@ class RuntimeApiService {
   }) async {
     final payload = <String, dynamic>{
       'session_id': sessionId,
+      'subject_id': subjectId,
+      'persisted_session_id': persistedSessionId,
+      'persisted_inference_id': persistedInferenceId,
+      'target_type': targetType,
       'event_id': eventId,
       'window_id': windowId,
       'user_feedback': userFeedback,
@@ -227,6 +306,42 @@ class RuntimeApiService {
     return RuntimeFeedbackAck.fromJson(json);
   }
 
+  Future<List<PersistedSessionSummary>> listPersistedSessions({
+    String? subjectId,
+    int limit = 50,
+    int offset = 0,
+  }) async {
+    final json = await _getJson(
+      '/v1/sessions',
+      queryParameters: <String, String?>{
+        'subject_id': subjectId,
+        'limit': limit.toString(),
+        'offset': offset.toString(),
+      },
+    );
+
+    final sessions = json['sessions'];
+    if (sessions is! List) {
+      return const <PersistedSessionSummary>[];
+    }
+
+    return sessions
+        .whereType<Map>()
+        .map(
+          (item) => PersistedSessionSummary.fromJson(
+            item.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<PersistedSessionDetail> fetchPersistedSessionDetail(
+    String appSessionId,
+  ) async {
+    final json = await _getJson('/v1/sessions/$appSessionId');
+    return PersistedSessionDetail.fromJson(json);
+  }
+
   Future<Map<String, dynamic>> _postJson(
     String path,
     Map<String, dynamic> payload,
@@ -238,10 +353,7 @@ class RuntimeApiService {
       response = await _client
           .post(
             uri,
-            headers: const {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
+            headers: _requestHeaders(includeContentType: true),
             body: jsonEncode(_stripNulls(payload)),
           )
           .timeout(_timeout);
@@ -264,9 +376,68 @@ class RuntimeApiService {
     return json;
   }
 
-  Uri _buildUri(String path) {
+  Future<Map<String, dynamic>> _getJson(
+    String path, {
+    Map<String, String?>? queryParameters,
+  }) async {
+    final uri = _buildUri(path, queryParameters: queryParameters);
+
+    http.Response response;
+    try {
+      response = await _client
+          .get(uri, headers: _requestHeaders())
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw RuntimeApiException('Request to $path timed out.');
+    } catch (e) {
+      throw RuntimeApiException('Failed to connect to backend: $e');
+    }
+
+    final json = _decodeJsonMap(response.body);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw _toApiException(
+        response.statusCode,
+        json,
+        fallbackMessage: 'Request failed for $path.',
+      );
+    }
+
+    return json;
+  }
+
+  Uri _buildUri(String path, {Map<String, String?>? queryParameters}) {
     final normalisedPath = path.startsWith('/') ? path : '/$path';
-    return Uri.parse('$_baseUrl$normalisedPath');
+    final baseUri = Uri.parse('$_baseUrl$normalisedPath');
+    if (queryParameters == null || queryParameters.isEmpty) {
+      return baseUri;
+    }
+
+    final cleaned = <String, String>{};
+    queryParameters.forEach((key, value) {
+      final trimmed = value?.trim();
+      if (trimmed == null || trimmed.isEmpty) {
+        return;
+      }
+      cleaned[key] = trimmed;
+    });
+
+    if (cleaned.isEmpty) {
+      return baseUri;
+    }
+
+    return baseUri.replace(queryParameters: cleaned);
+  }
+
+  Map<String, String> _requestHeaders({bool includeContentType = false}) {
+    final headers = <String, String>{'Accept': 'application/json'};
+    if (includeContentType) {
+      headers['Content-Type'] = 'application/json';
+    }
+    if (_basicAuthHeader != null) {
+      headers['Authorization'] = _basicAuthHeader;
+    }
+    return headers;
   }
 
   RuntimeApiException _toApiException(
@@ -322,6 +493,22 @@ class RuntimeApiService {
       default:
         return 'unknown';
     }
+  }
+
+  static String? _buildBasicAuthHeader({
+    required String? username,
+    required String? password,
+  }) {
+    final normalizedUsername = username?.trim() ?? '';
+    final normalizedPassword = password ?? '';
+    if (normalizedUsername.isEmpty || normalizedPassword.isEmpty) {
+      return null;
+    }
+
+    final token = base64Encode(
+      utf8.encode('$normalizedUsername:$normalizedPassword'),
+    );
+    return 'Basic $token';
   }
 }
 

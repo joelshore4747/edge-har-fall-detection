@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
 
+import 'persisted_session.dart';
+
 @immutable
 class SavedSession {
   const SavedSession({
-    required this.filePath,
+    this.filePath,
     required this.fileName,
     required this.subjectId,
     required this.placement,
@@ -11,12 +13,14 @@ class SavedSession {
     required this.savedAt,
     this.activityLabel,
     this.placementLabel,
-    this.testId,
-    this.testTitle,
     this.notes,
+    this.persistedUserId,
+    this.persistedSessionId,
+    this.persistedInferenceId,
+    this.isRemote = false,
   });
 
-  final String filePath;
+  final String? filePath;
   final String fileName;
   final String subjectId;
   final String placement;
@@ -24,9 +28,11 @@ class SavedSession {
   final DateTime savedAt;
   final String? activityLabel;
   final String? placementLabel;
-  final String? testId;
-  final String? testTitle;
   final String? notes;
+  final String? persistedUserId;
+  final String? persistedSessionId;
+  final String? persistedInferenceId;
+  final bool isRemote;
 
   bool get hasActivityLabel =>
       activityLabel != null && activityLabel!.trim().isNotEmpty;
@@ -34,13 +40,30 @@ class SavedSession {
   bool get hasPlacementLabel =>
       placementLabel != null && placementLabel!.trim().isNotEmpty;
 
-  bool get hasTestId => testId != null && testId!.trim().isNotEmpty;
-
-  bool get hasTestTitle => testTitle != null && testTitle!.trim().isNotEmpty;
-
   bool get hasNotes => notes != null && notes!.trim().isNotEmpty;
 
   bool get isLabelled => hasActivityLabel || hasPlacementLabel;
+
+  bool get hasLocalFile => filePath != null && filePath!.trim().isNotEmpty;
+
+  bool get hasPersistedSession =>
+      persistedSessionId != null && persistedSessionId!.trim().isNotEmpty;
+
+  bool get isRemoteOnly => isRemote && !hasLocalFile;
+
+  factory SavedSession.fromPersistedSummary(PersistedSessionSummary summary) {
+    return SavedSession(
+      fileName: summary.session.clientSessionId,
+      subjectId: summary.session.subjectId,
+      placement: summary.session.placementDeclared,
+      sampleCount: summary.session.sampleCount,
+      savedAt: summary.sortTimestamp.toUtc(),
+      persistedUserId: summary.session.userId,
+      persistedSessionId: summary.session.appSessionId,
+      persistedInferenceId: summary.latestInferenceId,
+      isRemote: true,
+    );
+  }
 
   SavedSession copyWith({
     String? filePath,
@@ -51,17 +74,21 @@ class SavedSession {
     DateTime? savedAt,
     String? activityLabel,
     String? placementLabel,
-    String? testId,
-    String? testTitle,
     String? notes,
+    String? persistedUserId,
+    String? persistedSessionId,
+    String? persistedInferenceId,
+    bool? isRemote,
     bool clearActivityLabel = false,
     bool clearPlacementLabel = false,
-    bool clearTestId = false,
-    bool clearTestTitle = false,
     bool clearNotes = false,
+    bool clearFilePath = false,
+    bool clearPersistedUserId = false,
+    bool clearPersistedSessionId = false,
+    bool clearPersistedInferenceId = false,
   }) {
     return SavedSession(
-      filePath: filePath ?? this.filePath,
+      filePath: clearFilePath ? null : (filePath ?? this.filePath),
       fileName: fileName ?? this.fileName,
       subjectId: subjectId ?? this.subjectId,
       placement: placement ?? this.placement,
@@ -73,9 +100,17 @@ class SavedSession {
       placementLabel: clearPlacementLabel
           ? null
           : (placementLabel ?? this.placementLabel),
-      testId: clearTestId ? null : (testId ?? this.testId),
-      testTitle: clearTestTitle ? null : (testTitle ?? this.testTitle),
       notes: clearNotes ? null : (notes ?? this.notes),
+      persistedUserId: clearPersistedUserId
+          ? null
+          : (persistedUserId ?? this.persistedUserId),
+      persistedSessionId: clearPersistedSessionId
+          ? null
+          : (persistedSessionId ?? this.persistedSessionId),
+      persistedInferenceId: clearPersistedInferenceId
+          ? null
+          : (persistedInferenceId ?? this.persistedInferenceId),
+      isRemote: isRemote ?? this.isRemote,
     );
   }
 
@@ -89,17 +124,17 @@ class SavedSession {
       'saved_at': savedAt.toUtc().toIso8601String(),
       'activity_label': activityLabel,
       'placement_label': placementLabel,
-      'test_id': testId,
-      'test_title': testTitle,
       'notes': notes,
+      'persisted_user_id': persistedUserId,
+      'persisted_session_id': persistedSessionId,
+      'persisted_inference_id': persistedInferenceId,
+      'is_remote': isRemote,
     };
   }
 
   factory SavedSession.fromJson(Map<String, dynamic> json) {
-    final notes = _asNullableString(json['notes']);
-
     return SavedSession(
-      filePath: (json['file_path'] ?? '').toString(),
+      filePath: _asNullableString(json['file_path']),
       fileName: (json['file_name'] ?? '').toString(),
       subjectId: (json['subject_id'] ?? 'unknown').toString(),
       placement: (json['placement'] ?? 'unknown').toString(),
@@ -107,13 +142,11 @@ class SavedSession {
       savedAt: _asDateTime(json['saved_at']) ?? DateTime.now().toUtc(),
       activityLabel: _asNullableString(json['activity_label']),
       placementLabel: _asNullableString(json['placement_label']),
-      testId:
-          _asNullableString(json['test_id']) ??
-          _metadataValueFromNotes(notes, 'test_id'),
-      testTitle:
-          _asNullableString(json['test_title']) ??
-          _metadataValueFromNotes(notes, 'test_title'),
-      notes: notes,
+      notes: _asNullableString(json['notes']),
+      persistedUserId: _asNullableString(json['persisted_user_id']),
+      persistedSessionId: _asNullableString(json['persisted_session_id']),
+      persistedInferenceId: _asNullableString(json['persisted_inference_id']),
+      isRemote: json['is_remote'] == true,
     );
   }
 
@@ -148,24 +181,6 @@ class SavedSession {
     return text.isEmpty ? null : text;
   }
 
-  static String? _metadataValueFromNotes(String? notes, String fieldName) {
-    final trimmedNotes = notes?.trim();
-    if (trimmedNotes == null || trimmedNotes.isEmpty) {
-      return null;
-    }
-
-    for (final part in trimmedNotes.split(' | ')) {
-      if (part.startsWith('$fieldName=')) {
-        final value = part.substring(fieldName.length + 1).trim();
-        if (value.isNotEmpty) {
-          return value;
-        }
-      }
-    }
-
-    return null;
-  }
-
   @override
   String toString() {
     return 'SavedSession('
@@ -177,9 +192,11 @@ class SavedSession {
         'savedAt: $savedAt, '
         'activityLabel: $activityLabel, '
         'placementLabel: $placementLabel, '
-        'testId: $testId, '
-        'testTitle: $testTitle, '
-        'notes: $notes'
+        'notes: $notes, '
+        'persistedUserId: $persistedUserId, '
+        'persistedSessionId: $persistedSessionId, '
+        'persistedInferenceId: $persistedInferenceId, '
+        'isRemote: $isRemote'
         ')';
   }
 
@@ -196,9 +213,11 @@ class SavedSession {
         other.savedAt == savedAt &&
         other.activityLabel == activityLabel &&
         other.placementLabel == placementLabel &&
-        other.testId == testId &&
-        other.testTitle == testTitle &&
-        other.notes == notes;
+        other.notes == notes &&
+        other.persistedUserId == persistedUserId &&
+        other.persistedSessionId == persistedSessionId &&
+        other.persistedInferenceId == persistedInferenceId &&
+        other.isRemote == isRemote;
   }
 
   @override
@@ -211,8 +230,10 @@ class SavedSession {
     savedAt,
     activityLabel,
     placementLabel,
-    testId,
-    testTitle,
     notes,
+    persistedUserId,
+    persistedSessionId,
+    persistedInferenceId,
+    isRemote,
   );
 }

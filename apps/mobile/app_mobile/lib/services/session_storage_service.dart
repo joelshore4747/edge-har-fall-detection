@@ -1,16 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/saved_session.dart';
-import '../models/sensor_sample.dart';
 
 class SessionStorageService {
   static const String _sessionsFolderName = 'saved_sessions';
-  static const int _schemaVersion = 3;
+  static const int _schemaVersion = 2;
 
   void _log(String message) {
     if (kDebugMode) {
@@ -49,8 +47,6 @@ class SessionStorageService {
     String? recordingMode,
     String? runtimeMode,
     double? samplingRateHz,
-    String? testId,
-    String? testTitle,
     String? notes,
   }) async {
     if (samples.isEmpty) {
@@ -60,16 +56,12 @@ class SessionStorageService {
 
     final dir = await _getSessionsDirectory();
     final now = DateTime.now();
-    final resolvedTestId =
-        _cleanOptionalValue(testId) ??
-        _metadataValueFromNotes(notes, 'test_id');
-    final resolvedTestTitle =
-        _cleanOptionalValue(testTitle) ??
-        _metadataValueFromNotes(notes, 'test_title');
     final fileName = _buildReadableFileName(
       timestamp: now,
-      testId: resolvedTestId,
-      testTitle: resolvedTestTitle,
+      subjectId: subjectId,
+      placement: placement,
+      recordingMode: recordingMode,
+      datasetName: datasetName,
     );
     final file = await _uniqueFile(dir, fileName);
     _log('Saving session file to ${file.path}');
@@ -95,8 +87,6 @@ class SessionStorageService {
       'sampling_rate_hz': samplingRateHz,
       'activity_label': null,
       'placement_label': null,
-      'test_id': resolvedTestId,
-      'test_title': resolvedTestTitle,
       'notes': notes ?? '',
       'samples': samples,
       'feedback': <Map<String, dynamic>>[],
@@ -129,15 +119,21 @@ class SessionStorageService {
         .where((file) => file.path.toLowerCase().endsWith('.json'))
         .toList(growable: false);
 
-    _log('Scanning ${files.length} saved session file(s) from ${dir.path}');
     final sessions = <SavedSession>[];
 
     for (final file in files) {
       try {
-        _log('Reading saved session manifest ${file.path}');
         final raw = await file.readAsString();
-        final payload = _decodeJsonObject(raw, file.path);
+        final json = jsonDecode(raw);
+        if (json is! Map) {
+          continue;
+        }
+
+        final payload = json.map(
+          (key, value) => MapEntry(key.toString(), value),
+        );
         final stat = await file.stat();
+        final inferenceResult = _asMap(payload['inference_result']);
 
         sessions.add(
           SavedSession(
@@ -153,190 +149,38 @@ class SessionStorageService {
                 stat.modified,
             activityLabel: _asString(payload['activity_label']),
             placementLabel: _asString(payload['placement_label']),
-            testId: _resolvedSessionMetadata(payload, 'test_id'),
-            testTitle: _resolvedSessionMetadata(payload, 'test_title'),
             notes: _asString(payload['notes']),
+            persistedUserId: _asString(inferenceResult['persisted_user_id']),
+            persistedSessionId: _asString(
+              inferenceResult['persisted_session_id'],
+            ),
+            persistedInferenceId: _asString(
+              inferenceResult['persisted_inference_id'],
+            ),
           ),
         );
-      } catch (error, stackTrace) {
-        _log('Skipping malformed session file ${file.path}: $error');
-        if (kDebugMode) {
-          debugPrint(stackTrace.toString());
-        }
+      } catch (_) {
+        // Ignore malformed session files so one bad file does not break the list.
       }
     }
 
     sessions.sort((a, b) => b.savedAt.compareTo(a.savedAt));
-    _log('Loaded ${sessions.length} saved session manifest(s)');
     return sessions;
   }
 
   Future<Map<String, dynamic>> loadSessionPayload(String filePath) async {
     final file = File(filePath);
-    _log('Loading session payload from $filePath');
-    if (!await file.exists()) {
-      throw FileSystemException('Saved session file not found.', filePath);
-    }
-
     final raw = await file.readAsString();
-    _log('Read ${raw.length} characters from $filePath');
-    final payload = _decodeJsonObject(raw, filePath);
-    final normalised = _normaliseLoadedPayload(payload, filePath: filePath);
-    _log(
-      'Loaded session payload from $filePath with '
-      '${_asList(normalised['samples']).length} valid sample(s)',
-    );
-    return normalised;
-  }
+    final decoded = jsonDecode(raw);
 
-  Future<File> exportSessionJsonFile(String filePath) async {
-    final payload = await loadSessionPayload(filePath);
-    final exportDir = await _getExportsDirectory();
-    final baseName = _buildExportBaseName(filePath, payload);
-
-    final file = await _uniqueExportFile(exportDir, baseName, 'json');
-    await file.writeAsString(
-      const JsonEncoder.withIndent('  ').convert(_stripNulls(payload)),
-    );
-
-    _log('Exported JSON session to ${file.path}');
-    return file;
-  }
-
-  Future<File> exportSessionCsvFile(String filePath) async {
-    final payload = await loadSessionPayload(filePath);
-    final exportDir = await _getExportsDirectory();
-    final baseName = _buildExportBaseName(filePath, payload);
-
-    final csv = _buildSessionCsv(payload);
-    final file = await _uniqueExportFile(exportDir, baseName, 'csv');
-    await file.writeAsString(csv);
-
-    _log('Exported CSV session to ${file.path}');
-    return file;
-  }
-
-  Future<Directory> _getExportsDirectory() async {
-    final temp = await getTemporaryDirectory();
-    final dir = Directory('${temp.path}/session_exports');
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-      _log('Created exports directory at ${dir.path}');
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
     }
-    return dir;
-  }
-
-  Future<File> _uniqueExportFile(
-    Directory dir,
-    String baseName,
-    String extension,
-  ) async {
-    var candidate = File('${dir.path}/$baseName.$extension');
-    if (!await candidate.exists()) {
-      return candidate;
+    if (decoded is Map) {
+      return decoded.map((key, value) => MapEntry(key.toString(), value));
     }
 
-    var index = 2;
-    while (await candidate.exists()) {
-      candidate = File('${dir.path}/${baseName}_$index.$extension');
-      index += 1;
-    }
-    return candidate;
-  }
-
-  String _buildExportBaseName(String filePath, Map<String, dynamic> payload) {
-    final testId = _resolvedSessionMetadata(payload, 'test_id');
-    final testTitle = _resolvedSessionMetadata(payload, 'test_title');
-    final slug = _testSlug(testTitle: testTitle, testId: testId);
-
-    final sessionId =
-        _cleanOptionalValue(_asString(payload['session_id'])) ??
-        File(filePath).uri.pathSegments.last.replaceAll('.json', '');
-
-    return 'session_export_${_slug(slug)}_${_slug(sessionId)}';
-  }
-
-  String _buildSessionCsv(Map<String, dynamic> payload) {
-    final samples = _asList(payload['samples']);
-
-    final sessionId = _asString(payload['session_id']) ?? '';
-    final subjectId = _asString(payload['subject_id']) ?? '';
-    final placement = _asString(payload['placement']) ?? '';
-    final savedAt = _asString(payload['saved_at']) ?? '';
-    final activityLabel = _asString(payload['activity_label']) ?? '';
-    final placementLabel = _asString(payload['placement_label']) ?? '';
-    final testId = _resolvedSessionMetadata(payload, 'test_id') ?? '';
-    final testTitle = _resolvedSessionMetadata(payload, 'test_title') ?? '';
-    final notes = _asString(payload['notes']) ?? '';
-
-    final header = <String>[
-      'sample_index',
-      'session_id',
-      'subject_id',
-      'placement',
-      'saved_at',
-      'activity_label',
-      'placement_label',
-      'test_id',
-      'test_title',
-      'timestamp',
-      'ax',
-      'ay',
-      'az',
-      'gx',
-      'gy',
-      'gz',
-      'magnitude',
-      'notes',
-    ];
-
-    final buffer = StringBuffer()..writeln(header.map(_csvCell).join(','));
-
-    for (var i = 0; i < samples.length; i++) {
-      final item = samples[i];
-      if (item is! Map) {
-        continue;
-      }
-
-      final sample = item.map((key, value) => MapEntry(key.toString(), value));
-
-      final timestamp = _asDouble(sample['timestamp']);
-      final ax = _asDouble(sample['ax']);
-      final ay = _asDouble(sample['ay']);
-      final az = _asDouble(sample['az']);
-      final gx = _asDouble(sample['gx']);
-      final gy = _asDouble(sample['gy']);
-      final gz = _asDouble(sample['gz']);
-
-      final magnitude = (ax != null && ay != null && az != null)
-          ? math.sqrt((ax * ax) + (ay * ay) + (az * az))
-          : null;
-
-      final row = <dynamic>[
-        i,
-        sessionId,
-        subjectId,
-        placement,
-        savedAt,
-        activityLabel,
-        placementLabel,
-        testId,
-        testTitle,
-        timestamp,
-        ax,
-        ay,
-        az,
-        gx,
-        gy,
-        gz,
-        magnitude,
-        notes,
-      ];
-
-      buffer.writeln(row.map(_csvCell).join(','));
-    }
-
-    return buffer.toString();
+    throw const FormatException('Saved session payload is not a JSON object.');
   }
 
   Future<void> updateSessionLabels({
@@ -346,20 +190,9 @@ class SessionStorageService {
     required String notes,
   }) async {
     final payload = await loadSessionPayload(filePath);
-    final existingNotes = _asString(payload['notes']);
-    final resolvedTestId =
-        _cleanOptionalValue(_asString(payload['test_id'])) ??
-        _metadataValueFromNotes(notes, 'test_id') ??
-        _metadataValueFromNotes(existingNotes, 'test_id');
-    final resolvedTestTitle =
-        _cleanOptionalValue(_asString(payload['test_title'])) ??
-        _metadataValueFromNotes(notes, 'test_title') ??
-        _metadataValueFromNotes(existingNotes, 'test_title');
 
     payload['activity_label'] = activityLabel;
     payload['placement_label'] = placementLabel;
-    payload['test_id'] = resolvedTestId;
-    payload['test_title'] = resolvedTestTitle;
     payload['notes'] = notes;
     payload['updated_at'] = DateTime.now().toIso8601String();
 
@@ -420,12 +253,8 @@ class SessionStorageService {
     final samples = _asList(payload['samples']);
 
     if (samples.isEmpty) {
-      throw StateError('Saved session contains no valid samples.');
+      throw StateError('Saved session contains no samples.');
     }
-
-    _log(
-      'Building inference payload from $filePath with ${samples.length} sample(s)',
-    );
 
     final sessionId =
         _asString(payload['session_id']) ??
@@ -435,8 +264,6 @@ class SessionStorageService {
     final placement = _normalisePlacement(
       _asString(payload['placement']) ?? 'unknown',
     );
-    final testId = _resolvedSessionMetadata(payload, 'test_id');
-    final testTitle = _resolvedSessionMetadata(payload, 'test_title');
 
     final metadata = <String, dynamic>{
       'session_id': sessionId,
@@ -454,8 +281,6 @@ class SessionStorageService {
       'recording_mode':
           _asString(payload['recording_mode']) ?? 'import_session',
       'runtime_mode': _asString(payload['runtime_mode']) ?? 'session_replay',
-      'test_id': testId,
-      'test_title': testTitle,
     };
 
     return <String, dynamic>{
@@ -480,11 +305,22 @@ class SessionStorageService {
 
   String _buildReadableFileName({
     required DateTime timestamp,
-    String? testId,
-    String? testTitle,
+    required String subjectId,
+    required String placement,
+    required String? recordingMode,
+    required String datasetName,
   }) {
-    final slug = _testSlug(testTitle: testTitle, testId: testId);
-    return 'session_${slug}_${timestamp.millisecondsSinceEpoch}.json';
+    final ts =
+        '${timestamp.year}-${timestamp.month.toString().padLeft(2, '0')}-${timestamp.day.toString().padLeft(2, '0')}_'
+        '${timestamp.hour.toString().padLeft(2, '0')}-${timestamp.minute.toString().padLeft(2, '0')}';
+
+    final subject = _slug(_fallback(subjectId, 'anonymous'));
+    final place = _slug(_fallback(placement, 'unknown'));
+    final mode = _slug(
+      _fallback(recordingMode, _inferModeFromDataset(datasetName)),
+    );
+
+    return '${ts}_${subject}_${place}_$mode.json';
   }
 
   Future<File> _uniqueFile(Directory dir, String fileName) async {
@@ -505,67 +341,20 @@ class SessionStorageService {
     return candidate;
   }
 
-  String _testSlug({String? testTitle, String? testId}) {
-    final cleanedTitle = _cleanOptionalValue(testTitle);
-    if (cleanedTitle != null) {
-      final withoutPrefix = cleanedTitle.replaceFirst(
-        RegExp(r'^\d+\s*[.):_/-]*\s*'),
-        '',
-      );
-      final withoutSuffix = withoutPrefix.replaceFirst(
-        RegExp(r'\s+test$', caseSensitive: false),
-        '',
-      );
-      final slug = _slug(withoutSuffix);
-      if (slug != 'unknown') {
-        return slug;
-      }
+  String _inferModeFromDataset(String datasetName) {
+    final lower = datasetName.toLowerCase();
+    if (lower.contains('demo')) {
+      return 'demo';
     }
-
-    final cleanedId = _cleanOptionalValue(testId);
-    if (cleanedId != null) {
-      final slug = _slug(cleanedId);
-      if (slug != 'unknown') {
-        return slug;
-      }
+    if (lower.contains('saved')) {
+      return 'replay';
     }
-
-    return 'unspecified';
+    return 'live';
   }
 
-  String? _resolvedSessionMetadata(
-    Map<String, dynamic> payload,
-    String fieldName,
-  ) {
-    final directValue = _cleanOptionalValue(_asString(payload[fieldName]));
-    if (directValue != null) {
-      return directValue;
-    }
-
-    return _metadataValueFromNotes(_asString(payload['notes']), fieldName);
-  }
-
-  String? _metadataValueFromNotes(String? notes, String fieldName) {
-    final trimmedNotes = _cleanOptionalValue(notes);
-    if (trimmedNotes == null) {
-      return null;
-    }
-
-    for (final part in trimmedNotes.split(' | ')) {
-      if (part.startsWith('$fieldName=')) {
-        return _cleanOptionalValue(part.substring(fieldName.length + 1));
-      }
-    }
-
-    return null;
-  }
-
-  String? _cleanOptionalValue(String? value) {
-    final trimmed = value?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return null;
-    }
-    return trimmed;
+  String _fallback(String? value, String fallback) {
+    final trimmed = value?.trim() ?? '';
+    return trimmed.isEmpty ? fallback : trimmed;
   }
 
   String _slug(String value) {
@@ -595,142 +384,6 @@ class SessionStorageService {
         return 'unknown';
     }
   }
-
-  Map<String, dynamic> _decodeJsonObject(String raw, String filePath) {
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(raw);
-    } on FormatException catch (error) {
-      throw FormatException(
-        'Invalid JSON in saved session "$filePath": ${error.message}',
-      );
-    }
-
-    if (decoded is Map<String, dynamic>) {
-      return decoded;
-    }
-    if (decoded is Map) {
-      return decoded.map((key, value) => MapEntry(key.toString(), value));
-    }
-
-    throw FormatException(
-      'Saved session payload is not a JSON object: $filePath',
-    );
-  }
-
-  Map<String, dynamic> _normaliseLoadedPayload(
-    Map<String, dynamic> payload, {
-    required String filePath,
-  }) {
-    final normalised = Map<String, dynamic>.from(payload);
-    final samples = _sanitiseSampleMaps(
-      normalised['samples'],
-      filePath: filePath,
-    );
-    final feedback = _sanitiseMapList(
-      normalised['feedback'],
-      fieldName: 'feedback',
-      filePath: filePath,
-    );
-
-    final declaredSampleCount = _asInt(normalised['sample_count']);
-    if (declaredSampleCount == null || declaredSampleCount != samples.length) {
-      _log(
-        'Normalised sample_count for $filePath from '
-        '${declaredSampleCount ?? 'null'} to ${samples.length}',
-      );
-    }
-
-    normalised['subject_id'] = _asString(normalised['subject_id']) ?? 'unknown';
-    normalised['placement'] = _asString(normalised['placement']) ?? 'unknown';
-    normalised['samples'] = samples;
-    normalised['sample_count'] = samples.length;
-    normalised['feedback'] = feedback;
-
-    final inferenceResult = normalised['inference_result'];
-    if (inferenceResult == null) {
-      return normalised;
-    }
-
-    if (inferenceResult is Map<String, dynamic>) {
-      return normalised;
-    }
-    if (inferenceResult is Map) {
-      normalised['inference_result'] = inferenceResult.map(
-        (key, value) => MapEntry(key.toString(), value),
-      );
-      return normalised;
-    }
-
-    _log(
-      'Dropping malformed inference_result from $filePath because it is not '
-      'a JSON object',
-    );
-    normalised.remove('inference_result');
-    return normalised;
-  }
-
-  List<Map<String, dynamic>> _sanitiseSampleMaps(
-    dynamic value, {
-    required String filePath,
-  }) {
-    if (value == null) {
-      _log('Saved session $filePath is missing a samples list');
-      return const <Map<String, dynamic>>[];
-    }
-    if (value is! List) {
-      _log('Saved session $filePath has a non-list samples field');
-      return const <Map<String, dynamic>>[];
-    }
-
-    final samples = <Map<String, dynamic>>[];
-    for (var i = 0; i < value.length; i++) {
-      final sample = SensorSample.tryFromJson(
-        value[i],
-        onInvalid: (message) {
-          _log('Skipping invalid sample #$i in $filePath: $message');
-        },
-      );
-      if (sample != null) {
-        samples.add(sample.toJson());
-      }
-    }
-
-    if (samples.length != value.length) {
-      _log(
-        'Kept ${samples.length}/${value.length} valid samples from $filePath',
-      );
-    }
-
-    return samples;
-  }
-
-  List<Map<String, dynamic>> _sanitiseMapList(
-    dynamic value, {
-    required String fieldName,
-    required String filePath,
-  }) {
-    if (value == null) {
-      return const <Map<String, dynamic>>[];
-    }
-    if (value is! List) {
-      _log('Saved session $filePath has a non-list $fieldName field');
-      return const <Map<String, dynamic>>[];
-    }
-
-    final items = <Map<String, dynamic>>[];
-    for (var i = 0; i < value.length; i++) {
-      final item = value[i];
-      if (item is! Map) {
-        _log('Skipping invalid $fieldName entry #$i in $filePath');
-        continue;
-      }
-
-      items.add(item.map((key, value) => MapEntry(key.toString(), value)));
-    }
-
-    return items;
-  }
 }
 
 List<dynamic> _asList(dynamic value) {
@@ -738,6 +391,16 @@ List<dynamic> _asList(dynamic value) {
     return value;
   }
   return const <dynamic>[];
+}
+
+Map<String, dynamic> _asMap(dynamic value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return value.map((key, item) => MapEntry(key.toString(), item));
+  }
+  return <String, dynamic>{};
 }
 
 String? _asString(dynamic value) {
@@ -794,22 +457,4 @@ dynamic _stripNulls(dynamic value) {
   }
 
   return value;
-}
-
-String _csvCell(dynamic value) {
-  if (value == null) {
-    return '';
-  }
-
-  final text = value.toString();
-  final escaped = text.replaceAll('"', '""');
-
-  if (escaped.contains(',') ||
-      escaped.contains('"') ||
-      escaped.contains('\n') ||
-      escaped.contains('\r')) {
-    return '"$escaped"';
-  }
-
-  return escaped;
 }

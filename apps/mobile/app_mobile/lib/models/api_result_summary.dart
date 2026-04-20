@@ -13,9 +13,17 @@ class ApiResultSummary {
     required this.pointTimeline,
     required this.groupedFallEvents,
     required this.rawJson,
+    this.requestId,
+    this.persistedUserId,
+    this.persistedSessionId,
+    this.persistedInferenceId,
   });
 
+  final String? requestId;
   final String sessionId;
+  final String? persistedUserId;
+  final String? persistedSessionId;
+  final String? persistedInferenceId;
   final RuntimeAlertSummaryModel alertSummary;
   final PlacementSummaryModel placementSummary;
   final HarSummaryModel harSummary;
@@ -37,7 +45,11 @@ class ApiResultSummary {
 
   factory ApiResultSummary.fromJson(Map<String, dynamic> json) {
     return ApiResultSummary(
+      requestId: _asString(json['request_id']),
       sessionId: _asString(json['session_id']) ?? 'unknown_session',
+      persistedUserId: _asString(json['persisted_user_id']),
+      persistedSessionId: _asString(json['persisted_session_id']),
+      persistedInferenceId: _asString(json['persisted_inference_id']),
       alertSummary: RuntimeAlertSummaryModel.fromJson(
         _asMap(json['alert_summary']),
       ),
