@@ -69,6 +69,32 @@ class RuntimeRegistrationResponse {
   }
 }
 
+class RuntimeAuthProfile {
+  RuntimeAuthProfile({
+    required this.status,
+    required this.role,
+    required this.authRequired,
+    this.username,
+    this.subjectId,
+  });
+
+  final String status;
+  final String? username;
+  final String? subjectId;
+  final String role;
+  final bool authRequired;
+
+  factory RuntimeAuthProfile.fromJson(Map<String, dynamic> json) {
+    return RuntimeAuthProfile(
+      status: _asString(json['status']) ?? 'unknown',
+      username: _asString(json['username']),
+      subjectId: _asString(json['subject_id']),
+      role: _asString(json['role']) ?? 'anonymous',
+      authRequired: json['auth_required'] as bool? ?? true,
+    );
+  }
+}
+
 class RuntimeFeedbackAck {
   RuntimeFeedbackAck({
     required this.sessionId,
@@ -188,6 +214,11 @@ class RuntimeApiService {
       'app_build': appBuild,
     });
     return RuntimeRegistrationResponse.fromJson(json);
+  }
+
+  Future<RuntimeAuthProfile> fetchAuthProfile() async {
+    final json = await _getJson('/v1/auth/me');
+    return RuntimeAuthProfile.fromJson(json);
   }
 
   Future<ApiResultSummary> submitSession({

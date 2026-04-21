@@ -6,9 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../config/runtime_config.dart';
+import '../models/runtime_identity.dart';
 import '../models/sensor_sample.dart';
 import '../services/runtime_api_service.dart';
-import '../services/runtime_identity_service.dart';
 import '../services/sensor_recorder.dart';
 import '../services/session_storage_service.dart';
 import '../widgets/session_save_sheet.dart';
@@ -17,7 +17,14 @@ import 'saved_sessions_page.dart';
 import '../models/api_result_summary.dart';
 
 class RuntimeHomePage extends StatefulWidget {
-  const RuntimeHomePage({super.key});
+  const RuntimeHomePage({
+    super.key,
+    required this.initialIdentity,
+    this.onSignOut,
+  });
+
+  final RuntimeIdentity initialIdentity;
+  final Future<void> Function()? onSignOut;
 
   @override
   State<RuntimeHomePage> createState() => _RuntimeHomePageState();
@@ -126,11 +133,11 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
     setState(() {
       _isCheckingHealth = true;
-      _status = 'Setting up your personal account...';
+      _status = 'Checking server health...';
     });
 
     try {
-      final identity = await RuntimeIdentityService.instance.ensureIdentity();
+      final identity = widget.initialIdentity;
       _api?.dispose();
       _api = RuntimeApiService(
         baseUrl: runtimeApiBaseUrl,
@@ -141,7 +148,8 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
       if (!mounted) return;
       setState(() {
         _subjectController.text = identity.subjectId;
-        _status = 'Account ready. Checking server health...';
+        _status =
+            'Signed in as ${identity.username}. Checking server health...';
       });
 
       await _runHealthCheck(updateStatus: false);
@@ -150,7 +158,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
       setState(() {
         _health = null;
         _serverHealthy = false;
-        _status = 'Failed to prepare your account: $e';
+        _status = 'Failed to prepare signed-in account: $e';
       });
     } finally {
       if (mounted) {
@@ -1504,7 +1512,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
         children: [
           _sectionTitle(
             'Session Setup',
-            'Your account is assigned automatically on first launch. Only placement is editable here.',
+            'Account and placement used for uploaded recordings.',
           ),
           TextField(
             controller: _subjectController,
@@ -1512,9 +1520,24 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
             decoration: const InputDecoration(
               labelText: 'Subject ID',
               prefixIcon: Icon(Icons.person_outline),
-              helperText: 'Generated for this device during first launch.',
+              helperText: 'Linked to the signed-in account.',
             ),
           ),
+          if (widget.onSignOut != null) ...[
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _isSending || _isCheckingHealth
+                    ? null
+                    : () async {
+                        await widget.onSignOut?.call();
+                      },
+                icon: const Icon(Icons.logout_rounded),
+                label: const Text('Sign out'),
+              ),
+            ),
+          ],
           const SizedBox(height: 14),
           DropdownButtonFormField<String>(
             initialValue: _selectedPlacement,

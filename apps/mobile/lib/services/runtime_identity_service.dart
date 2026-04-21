@@ -32,6 +32,29 @@ class RuntimeIdentityService {
 
   RuntimeIdentity? get currentIdentity => _currentIdentity;
 
+  Future<RuntimeIdentity?> loadExistingIdentity() async {
+    if (_currentIdentity != null) {
+      return _currentIdentity;
+    }
+
+    final configuredIdentity = _configuredIdentity();
+    if (configuredIdentity != null) {
+      _currentIdentity = configuredIdentity;
+      return configuredIdentity;
+    }
+
+    final storedIdentity = await _loadIdentity();
+    if (storedIdentity == null ||
+        storedIdentity.username.isEmpty ||
+        storedIdentity.password.isEmpty ||
+        !storedIdentity.registered) {
+      return null;
+    }
+
+    _currentIdentity = storedIdentity;
+    return storedIdentity;
+  }
+
   Future<RuntimeIdentity> ensureIdentity() async {
     if (_currentIdentity != null) {
       return _currentIdentity!;
@@ -55,6 +78,84 @@ class RuntimeIdentityService {
     final generatedIdentity = _generateIdentity();
     await _saveIdentity(generatedIdentity);
     return _registerAndPersist(generatedIdentity);
+  }
+
+  Future<RuntimeIdentity> signIn({
+    required String username,
+    required String password,
+  }) async {
+    final normalizedUsername = username.trim();
+    if (normalizedUsername.isEmpty || password.isEmpty) {
+      throw RuntimeIdentityException('Username and password are required.');
+    }
+
+    final identity = RuntimeIdentity(
+      username: normalizedUsername,
+      password: password,
+      subjectId: normalizedUsername,
+      displayName: normalizedUsername,
+      registered: true,
+      provisioningMode: 'manual_login',
+    );
+
+    return verifyIdentity(identity);
+  }
+
+  Future<RuntimeIdentity> signUp({
+    required String username,
+    required String password,
+    required String subjectId,
+    String? displayName,
+  }) async {
+    final identity = RuntimeIdentity(
+      username: username.trim(),
+      password: password,
+      subjectId: subjectId.trim(),
+      displayName: _cleanText(displayName) ?? subjectId.trim(),
+      registered: false,
+      provisioningMode: 'manual_signup',
+    );
+    return _registerAndPersist(identity);
+  }
+
+  Future<RuntimeIdentity> verifyIdentity(RuntimeIdentity identity) async {
+    final api = RuntimeApiService(
+      baseUrl: runtimeApiBaseUrl,
+      basicAuthUsername: identity.username,
+      basicAuthPassword: identity.password,
+    );
+    try {
+      final profile = await api.fetchAuthProfile();
+      final subjectId =
+          (profile.subjectId == null || profile.subjectId!.trim().isEmpty)
+          ? identity.subjectId
+          : profile.subjectId!.trim();
+      final resolvedIdentity = identity.copyWith(
+        username: profile.username ?? identity.username,
+        subjectId: subjectId,
+        displayName: identity.displayName ?? subjectId,
+        registered: true,
+        provisioningMode: identity.provisioningMode,
+        registeredAt: identity.registeredAt ?? DateTime.now().toUtc(),
+      );
+      await _saveIdentity(resolvedIdentity);
+      _currentIdentity = resolvedIdentity;
+      return resolvedIdentity;
+    } on RuntimeApiException catch (error) {
+      throw RuntimeIdentityException(
+        'Login was rejected by the server: ${error.message}',
+      );
+    } finally {
+      api.dispose();
+    }
+  }
+
+  Future<void> clearIdentity() async {
+    _currentIdentity = null;
+    final file = await _identityFile();
+    if (await file.exists()) {
+      await file.delete();
+    }
   }
 
   RuntimeIdentity? _configuredIdentity() {
@@ -135,6 +236,14 @@ class RuntimeIdentityService {
       await file.parent.create(recursive: true);
     }
     await file.writeAsString(jsonEncode(identity.toJson()));
+  }
+
+  String? _cleanText(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
   }
 
   Future<File> _identityFile() async {

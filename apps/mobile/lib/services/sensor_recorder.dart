@@ -36,7 +36,6 @@ class SensorRecorderService {
 
   DateTime? _recordingStartedAtUtc;
   DateTime? _firstSensorTimestampUtc;
-  DateTime? _lastSensorTimestampUtc;
 
   double? _lastGx;
   double? _lastGy;
@@ -128,7 +127,6 @@ class SensorRecorderService {
         (reading) {
           final eventTimestampUtc = reading.timestamp.toUtc();
           _firstSensorTimestampUtc ??= eventTimestampUtc;
-          _lastSensorTimestampUtc = eventTimestampUtc;
 
           final start = _firstSensorTimestampUtc!;
           final tsSeconds =
@@ -319,7 +317,6 @@ class SensorRecorderService {
   void _resetSession() {
     _samples.clear();
     _firstSensorTimestampUtc = null;
-    _lastSensorTimestampUtc = null;
     _recordingStartedAtUtc = null;
 
     _lastGx = null;

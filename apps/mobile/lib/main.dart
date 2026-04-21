@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'pages/runtime_home_page.dart';
+import 'pages/auth_gate_page.dart';
 
 void main() {
   runApp(const FallMonitorApp());
@@ -204,7 +204,7 @@ class FallMonitorApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const RuntimeHomePage(),
+      home: const AuthGatePage(),
     );
   }
 }
