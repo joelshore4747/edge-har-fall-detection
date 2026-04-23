@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UniFallMonitor - System Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root,[data-theme="light"]{
+  --bg:#f4f3ef;--surface:#ffffff;--surface-2:#f5f4f1;
+  --border:rgba(30,25,15,0.1);--text:#1a1714;--text-muted:#6b6864;--text-faint:#b5b3ae;
+  --accent:#016a70;--accent-glow:rgba(1,106,112,0.18);--accent-dim:rgba(1,106,112,0.08);
+  --blue:#0f5fa3;--blue-glow:rgba(15,95,163,0.18);--blue-dim:rgba(15,95,163,0.08);
+  --orange:#c55700;--orange-dim:rgba(197,87,0,0.08);
+  --green:#2e6b14;--green-glow:rgba(46,107,20,0.18);--green-dim:rgba(46,107,20,0.08);
+  --purple:#5f26a8;--purple-dim:rgba(95,38,168,0.08);
+  --docker:#0f6cbf;--docker-dim:rgba(15,108,191,0.08);
+  --shadow:0 2px 8px rgba(20,16,8,0.07),0 8px 24px rgba(20,16,8,0.04);
+  --shadow-lg:0 8px 32px rgba(20,16,8,0.1),0 24px 64px rgba(20,16,8,0.06);
+  --radius:14px;
+}
+[data-theme="dark"]{
+  --bg:#0f0e0c;--surface:#181714;--surface-2:#1e1d1a;
+  --border:rgba(255,255,255,0.07);--text:#e8e6e2;--text-muted:#888480;--text-faint:#4a4845;
+  --accent:#3fa8b0;--accent-glow:rgba(63,168,176,0.2);--accent-dim:rgba(63,168,176,0.08);
+  --blue:#5591c7;--blue-glow:rgba(85,145,199,0.2);--blue-dim:rgba(85,145,199,0.08);
+  --orange:#f59d3d;--orange-dim:rgba(245,157,61,0.08);
+  --green:#62a83e;--green-glow:rgba(98,168,62,0.2);--green-dim:rgba(98,168,62,0.08);
+  --purple:#9b67d8;--purple-dim:rgba(155,103,216,0.08);
+  --docker:#4fa3e0;--docker-dim:rgba(79,163,224,0.08);
+  --shadow:0 2px 8px rgba(0,0,0,0.3),0 8px 24px rgba(0,0,0,0.2);
+  --shadow-lg:0 8px 32px rgba(0,0,0,0.4),0 24px 64px rgba(0,0,0,0.25);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-font-smoothing:antialiased;scroll-behavior:smooth}
+body{font-family:"Inter",sans-serif;background:var(--bg);color:var(--text);min-height:100vh;transition:background .4s,color .4s;overflow-x:hidden}
+.page-header{position:sticky;top:0;z-index:100;backdrop-filter:blur(16px);background:color-mix(in oklab,var(--bg) 82%,transparent);border-bottom:1px solid var(--border);padding:13px 24px;display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px;font-weight:600;font-size:15px;letter-spacing:-.01em}
+.hdr-right{display:flex;align-items:center;gap:10px}
+.badge{font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:500;letter-spacing:.02em;padding:4px 10px;border-radius:999px;background:var(--accent-dim);color:var(--accent);border:1px solid color-mix(in oklab,var(--accent) 22%,transparent)}
+.theme-btn{width:34px;height:34px;border-radius:50%;cursor:pointer;border:1px solid var(--border);background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--text-muted);transition:all 180ms cubic-bezier(.16,1,.3,1)}
+.theme-btn:hover{background:var(--surface);color:var(--text)}
+.canvas{max-width:1080px;margin:0 auto;padding:40px 20px 64px}
+.page-title{text-align:center;margin-bottom:36px;opacity:0;animation:rise .6s cubic-bezier(.16,1,.3,1) .1s forwards}
+.page-title h1{font-size:clamp(18px,2.8vw,26px);font-weight:600;letter-spacing:-.03em}
+.page-title p{margin-top:5px;font-size:13px;color:var(--text-muted);font-family:"JetBrains Mono",monospace}
+.arch{display:flex;flex-direction:column;gap:0}
+.layer{border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow);overflow:hidden;opacity:0;animation:layerIn .5s cubic-bezier(.16,1,.3,1) both}
+.layer:nth-child(1){animation-delay:.2s}.layer:nth-child(3){animation-delay:.45s}.layer:nth-child(5){animation-delay:.6s}.layer:nth-child(7){animation-delay:.8s}.layer:nth-child(9){animation-delay:1s}
+.accent-bar{height:3px;width:100%}
+.layer-body{padding:18px 22px 20px}
+.lyr-hdr{display:flex;align-items:center;gap:11px;margin-bottom:12px}
+.lyr-icon{width:36px;height:36px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px}
+.lyr-label{font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);margin-bottom:2px}
+.lyr-name{font-size:15px;font-weight:600;letter-spacing:-.02em}
+.lyr-logos{margin-left:auto;display:flex;gap:6px;align-items:center}
+.chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:7px;font-family:"JetBrains Mono",monospace;font-size:10.5px;font-weight:500;border:1px solid var(--border);background:var(--surface-2);color:var(--text-muted);cursor:default;transition:all 200ms cubic-bezier(.16,1,.3,1);position:relative;opacity:0;transform:translateY(5px)}
+.chip.vis{opacity:1;transform:translateY(0)}
+.chip:hover{transform:translateY(-1px);box-shadow:var(--shadow)}
+.cdot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.c-teal:hover{background:var(--accent-dim);border-color:color-mix(in oklab,var(--accent) 30%,transparent);color:var(--accent)}.c-teal .cdot{background:var(--accent)}
+.c-blue:hover{background:var(--blue-dim);border-color:color-mix(in oklab,var(--blue) 30%,transparent);color:var(--blue)}.c-blue .cdot{background:var(--blue)}
+.c-orange:hover{background:var(--orange-dim);border-color:color-mix(in oklab,var(--orange) 30%,transparent);color:var(--orange)}.c-orange .cdot{background:var(--orange)}
+.c-green:hover{background:var(--green-dim);border-color:color-mix(in oklab,var(--green) 30%,transparent);color:var(--green)}.c-green .cdot{background:var(--green)}
+.c-purple:hover{background:var(--purple-dim);border-color:color-mix(in oklab,var(--purple) 30%,transparent);color:var(--purple)}.c-purple .cdot{background:var(--purple)}
+.c-docker:hover{background:var(--docker-dim);border-color:color-mix(in oklab,var(--docker) 30%,transparent);color:var(--docker)}.c-docker .cdot{background:var(--docker)}
+.chip[data-tip]:hover .tip{opacity:1;visibility:visible;transform:translateX(-50%) translateY(-4px)}
+.tip{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%) translateY(0);background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-family:"Inter",sans-serif;font-size:11px;color:var(--text-muted);white-space:nowrap;z-index:200;pointer-events:none;opacity:0;visibility:hidden;transition:all 160ms ease;box-shadow:var(--shadow-lg)}
+.infra-row{display:grid;grid-template-columns:1fr 1px 1fr;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:var(--surface);box-shadow:var(--shadow);opacity:0;animation:layerIn .5s cubic-bezier(.16,1,.3,1) .45s both}
+.infra-div{background:var(--border)}
+.infra-cell{padding:18px 22px 20px;position:relative}
+.server-group{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;background:var(--surface);box-shadow:var(--shadow);opacity:0;animation:layerIn .5s cubic-bezier(.16,1,.3,1) .6s both}
+.sg-hdr{padding:10px 22px;background:var(--surface-2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.sg-hdr span{font-family:"JetBrains Mono",monospace;font-size:10.5px;color:var(--text-faint);letter-spacing:.05em;text-transform:uppercase}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s ease-in-out infinite;flex-shrink:0}
+.sg-cols{display:grid;grid-template-columns:1fr 1px 1fr}
+.sg-div{background:var(--border)}
+.sg-col{padding:18px 22px 20px}
+.api-url{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:7px;background:var(--accent-dim);border:1px solid color-mix(in oklab,var(--accent) 25%,transparent);font-family:"JetBrains Mono",monospace;font-size:10.5px;color:var(--accent);font-weight:500;margin-bottom:12px}
+.db-tables{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:6px;margin-top:8px}
+.db-table{padding:8px 11px;border-radius:7px;background:var(--surface-2);border:1px solid var(--border);font-family:"JetBrains Mono",monospace;font-size:10px;color:var(--text-muted);transition:all 200ms cubic-bezier(.16,1,.3,1);cursor:default}
+.db-table:hover{background:var(--green-dim);border-color:color-mix(in oklab,var(--green) 30%,transparent);color:var(--green);transform:translateY(-1px);box-shadow:var(--shadow)}
+.db-table strong{display:block;color:var(--text);font-size:10.5px;margin-bottom:2px;font-weight:500}
+.admin-split{display:grid;grid-template-columns:1fr 1px 1fr;margin-top:6px}
+.admin-div{background:var(--border)}
+.admin-world{padding:12px 0 0}
+.admin-world:first-child{padding-right:16px}
+.admin-world:last-child{padding-left:16px}
+.admin-lbl{font-family:"JetBrains Mono",monospace;font-size:10px;letter-spacing:.07em;text-transform:uppercase;color:var(--text-faint);margin-bottom:7px}
+.admin-sub{margin-top:6px;font-size:11px;color:var(--text-faint);font-family:"JetBrains Mono",monospace}
+.conn{display:flex;flex-direction:column;align-items:center;height:50px;position:relative;z-index:10;opacity:0;animation:fadeIn .4s ease both}
+.conn:nth-of-type(2){animation-delay:.35s}.conn:nth-of-type(4){animation-delay:.55s}.conn:nth-of-type(6){animation-delay:.75s}
+.conn-line{width:2px;flex:1;background:linear-gradient(to bottom,var(--border),color-mix(in oklab,var(--accent) 28%,var(--border)));position:relative;overflow:hidden}
+.conn-line::after{content:"";position:absolute;top:-100%;left:0;right:0;height:60%;background:linear-gradient(to bottom,transparent,var(--accent),transparent);animation:flowDown 2.2s ease-in-out infinite}
+.conn-lbl{font-family:"JetBrains Mono",monospace;font-size:10px;color:var(--text-faint);letter-spacing:.04em;white-space:nowrap;background:var(--bg);padding:0 8px;border:1px solid var(--border);border-radius:999px;margin:4px 0}
+.conn-arrow{width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid color-mix(in oklab,var(--accent) 45%,var(--border))}
+.legend{display:flex;flex-wrap:wrap;gap:14px;justify-content:center;margin-top:28px;padding:14px 18px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);opacity:0;animation:fadeIn .6s ease 1.3s both}
+.leg-item{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-muted)}
+.leg-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+@keyframes layerIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes flowDown{0%{top:-60%}100%{top:160%}}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 var(--green-glow)}50%{box-shadow:0 0 0 5px transparent}}
+@media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+@media(max-width:660px){
+  .infra-row,.sg-cols,.admin-split{grid-template-columns:1fr}
+  .infra-div,.sg-div{height:1px;width:100%}
+  .admin-div{height:1px;width:100%;margin:10px 0}
+  .admin-world:first-child{padding-right:0}
+  .admin-world:last-child{padding-left:0}
+  .db-tables{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+<header class="page-header">
+  <div class="logo">
+    <svg width="26" height="26" viewBox="0 0 26 26" fill="none" aria-label="UniFall logo">
+      <rect width="26" height="26" rx="7" fill="currentColor" opacity="0.1"/>
+      <polygon points="13,5 21,10 21,18 13,23 5,18 5,10" stroke="currentColor" stroke-width="1.4" fill="none"/>
+      <circle cx="13" cy="14" r="2" fill="currentColor"/>
+      <line x1="13" y1="5" x2="13" y2="12" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+      <line x1="21" y1="10" x2="15.5" y2="12.8" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+      <line x1="21" y1="18" x2="15.5" y2="15.2" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+      <line x1="13" y1="23" x2="13" y2="16" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+      <line x1="5" y1="18" x2="10.5" y2="15.2" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+      <line x1="5" y1="10" x2="10.5" y2="12.8" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+    </svg>
+    UniFallMonitor
+  </div>
+  <div class="hdr-right">
+    <span class="badge">System Architecture &middot; Diagram 1</span>
+    <button class="theme-btn" data-theme-toggle aria-label="Toggle theme">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+<main class="canvas">
+  <div class="page-title">
+    <h1>End-to-End System Architecture</h1>
+    <p>Flutter &middot; Nginx &middot; Docker &middot; FastAPI &middot; PostgreSQL &middot; SolidJS</p>
+  </div>
+  <div class="arch">
+    <div class="layer">
+      <div class="accent-bar" style="background:linear-gradient(90deg,var(--blue),transparent)"></div>
+      <div class="layer-body">
+        <div class="lyr-hdr">
+          <div class="lyr-icon" style="background:var(--blue-dim);color:var(--blue)">&#128241;</div>
+          <div><div class="lyr-label">Client Layer</div><div class="lyr-name" style="color:var(--blue)">Flutter Mobile Application</div></div>
+          <div class="lyr-logos">
+            <img src="https://cdn.simpleicons.org/flutter/54C5F8" width="17" height="17" alt="Flutter" loading="lazy">
+            <img src="https://cdn.simpleicons.org/android/a4c639" width="17" height="17" alt="Android" loading="lazy">
+            <img src="https://cdn.simpleicons.org/apple/888888" width="17" height="17" alt="iOS" loading="lazy">
+          </div>
+        </div>
+        <div class="chips">
+          <div class="chip c-blue" data-tip><span class="cdot"></span>SensorRecorder.dart<span class="tip">IMU capture at target Hz &mdash; accel + gyro</span></div>
+          <div class="chip c-blue" data-tip><span class="cdot"></span>SessionStorageService.dart<span class="tip">Packages sliding windows, manages local state</span></div>
+          <div class="chip c-blue" data-tip><span class="cdot"></span>RuntimeApiService.dart<span class="tip">POST /session/infer to api.unifallmonitor.com</span></div>
+          <div class="chip c-blue" data-tip><span class="cdot"></span>RuntimeIdentityService.dart<span class="tip">Manages subject_key + device registration</span></div>
+          <div class="chip c-blue"><span class="cdot"></span>iOS &amp; Android</div>
+        </div>
+      </div>
+    </div>
+    <div class="conn"><div class="conn-line"></div><div class="conn-lbl">HTTPS &middot; JSON &middot; api.unifallmonitor.com</div><div class="conn-arrow"></div></div>
+    <div class="infra-row">
+      <div class="infra-cell">
+        <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--orange),transparent)"></div>
+        <div class="lyr-hdr" style="margin-top:3px">
+          <div class="lyr-icon" style="background:var(--orange-dim);color:var(--orange)">&#8651;</div>
+          <div><div class="lyr-label">Reverse Proxy</div><div class="lyr-name" style="color:var(--orange)">Nginx</div></div>
+          <div class="lyr-logos"><img src="https://cdn.simpleicons.org/nginx/009639" width="18" height="18" alt="Nginx" loading="lazy"></div>
+        </div>
+        <div class="chips">
+          <div class="chip c-orange"><span class="cdot"></span>TLS termination</div>
+          <div class="chip c-orange"><span class="cdot"></span>api.unifallmonitor.com</div>
+          <div class="chip c-orange"><span class="cdot"></span>Proxy &rarr; :8000</div>
+          <div class="chip c-orange"><span class="cdot"></span>Static file serving</div>
+          <div class="chip c-orange"><span class="cdot"></span>nginx.conf</div>
+        </div>
+      </div>
+      <div class="infra-div"></div>
+      <div class="infra-cell">
+        <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--docker),transparent)"></div>
+        <div class="lyr-hdr" style="margin-top:3px">
+          <div class="lyr-icon" style="background:var(--docker-dim);color:var(--docker)">&#9903;</div>
+          <div><div class="lyr-label">Container Runtime</div><div class="lyr-name" style="color:var(--docker)">Docker / Compose</div></div>
+          <div class="lyr-logos"><img src="https://cdn.simpleicons.org/docker/1d63ed" width="18" height="18" alt="Docker" loading="lazy"></div>
+        </div>
+        <div class="chips">
+          <div class="chip c-docker"><span class="cdot"></span>api service</div>
+          <div class="chip c-docker"><span class="cdot"></span>postgres service</div>
+          <div class="chip c-docker"><span class="cdot"></span>nginx service</div>
+          <div class="chip c-docker"><span class="cdot"></span>docker-compose.yml</div>
+          <div class="chip c-docker"><span class="cdot"></span>Dockerfile</div>
+        </div>
+      </div>
+    </div>
+    <div class="conn"><div class="conn-line"></div><div class="conn-lbl">Routes to FastAPI &middot; port 8000 &middot; VPS server</div><div class="conn-arrow"></div></div>
+    <div class="server-group">
+      <div class="sg-hdr">
+        <div class="pulse"></div>
+        <span>Server Infrastructure &middot; api.unifallmonitor.com</span>
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          <img src="https://cdn.simpleicons.org/fastapi/009688" width="15" height="15" alt="FastAPI" loading="lazy">
+          <img src="https://cdn.simpleicons.org/postgresql/4169e1" width="15" height="15" alt="PostgreSQL" loading="lazy">
+          <img src="https://cdn.simpleicons.org/python/3776ab" width="15" height="15" alt="Python" loading="lazy">
+        </div>
+      </div>
+      <div class="sg-cols">
+        <div class="sg-col">
+          <div style="height:2px;background:linear-gradient(90deg,var(--accent),transparent);border-radius:1px;margin-bottom:14px"></div>
+          <div class="lyr-hdr">
+            <div class="lyr-icon" style="background:var(--accent-dim);color:var(--accent)">&#9889;</div>
+            <div><div class="lyr-label">Inference Engine</div><div class="lyr-name" style="color:var(--accent)">FastAPI Backend</div></div>
+          </div>
+          <div class="api-url">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10z"/></svg>
+            api.unifallmonitor.com
+          </div>
+          <div class="chips">
+            <div class="chip c-teal" data-tip><span class="cdot"></span>runtime_inference.py<span class="tip">HAR Transformer + FallNet Lite sliding-window scoring</span></div>
+            <div class="chip c-teal" data-tip><span class="cdot"></span>runtime_timeline.py<span class="tip">Groups windows into events + transition detection</span></div>
+            <div class="chip c-teal" data-tip><span class="cdot"></span>runtime_persistence.py<span class="tip">Writes sessions, inferences, events to PostgreSQL</span></div>
+            <div class="chip c-teal" data-tip><span class="cdot"></span>placement_state.py<span class="tip">Pocket / hand / wrist placement classification</span></div>
+            <div class="chip c-teal" data-tip><span class="cdot"></span>runtime_auth.py<span class="tip">JWT auth &mdash; mobile + admin roles</span></div>
+            <div class="chip c-teal" data-tip><span class="cdot"></span>HAR Transformer<span class="tip">Activity: static / locomotion / stairs / other</span></div>
+            <div class="chip c-teal" data-tip><span class="cdot"></span>FallNet Lite<span class="tip">Outputs top_fall_probability per window</span></div>
+          </div>
+        </div>
+        <div class="sg-div"></div>
+        <div class="sg-col">
+          <div style="height:2px;background:linear-gradient(90deg,var(--green),transparent);border-radius:1px;margin-bottom:14px"></div>
+          <div class="lyr-hdr">
+            <div class="lyr-icon" style="background:var(--green-dim);color:var(--green)">&#128451;</div>
+            <div><div class="lyr-label">Persistence Layer</div><div class="lyr-name" style="color:var(--green)">PostgreSQL Database</div></div>
+          </div>
+          <div class="db-tables">
+            <div class="db-table"><strong>app_sessions</strong>device, placement, task_type</div>
+            <div class="db-table"><strong>app_session_inferences</strong>warning_level, likely_fall</div>
+            <div class="db-table"><strong>app_grouped_fall_events</strong>peak_prob, duration</div>
+            <div class="db-table"><strong>app_timeline_events</strong>activity_label, fall_prob</div>
+            <div class="db-table"><strong>app_transition_events</strong>from / to activity</div>
+            <div class="db-table"><strong>app_feedback</strong>confirmed_fall, false_alarm</div>
+            <div class="db-table"><strong>app_users</strong>subject_key, device info</div>
+            <div class="db-table"><strong>app_auth_accounts</strong>role, password_hash</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="conn"><div class="conn-line"></div><div class="conn-lbl">Admin REST API &middot; protected routes &middot; read-only</div><div class="conn-arrow"></div></div>
+    <div class="layer">
+      <div class="accent-bar" style="background:linear-gradient(90deg,var(--purple),transparent)"></div>
+      <div class="layer-body">
+        <div class="lyr-hdr">
+          <div class="lyr-icon" style="background:var(--purple-dim);color:var(--purple)">&#128421;</div>
+          <div><div class="lyr-label">Admin Interface</div><div class="lyr-name" style="color:var(--purple)">SolidJS Admin Panel</div></div>
+          <div class="lyr-logos">
+            <img src="https://cdn.simpleicons.org/solid/2c4f7c" width="16" height="16" alt="SolidJS" loading="lazy">
+            <img src="https://cdn.simpleicons.org/vite/646cff" width="16" height="16" alt="Vite" loading="lazy">
+            <img src="https://cdn.simpleicons.org/typescript/3178c6" width="16" height="16" alt="TypeScript" loading="lazy">
+          </div>
+        </div>
+        <div class="admin-split">
+          <div class="admin-world">
+            <div class="admin-lbl">Editorial Shell</div>
+            <div class="chips">
+              <div class="chip c-purple"><span class="cdot"></span>/briefing</div>
+              <div class="chip c-purple"><span class="cdot"></span>/results</div>
+              <div class="chip c-purple"><span class="cdot"></span>/docs</div>
+            </div>
+            <div class="admin-sub">Narrative &middot; research &middot; dissertation</div>
+          </div>
+          <div class="admin-div"></div>
+          <div class="admin-world">
+            <div class="admin-lbl">Analytics Shell</div>
+            <div class="chips">
+              <div class="chip c-purple"><span class="cdot"></span>/dashboard</div>
+              <div class="chip c-purple"><span class="cdot"></span>/sessions</div>
+              <div class="chip c-purple"><span class="cdot"></span>/library</div>
+              <div class="chip c-purple"><span class="cdot"></span>/explore</div>
+            </div>
+            <div class="admin-sub">Operational &middot; evidence &middot; data</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="legend">
+    <div class="leg-item"><span class="leg-dot" style="background:var(--blue)"></span>Flutter Client</div>
+    <div class="leg-item"><span class="leg-dot" style="background:var(--orange)"></span>Nginx Proxy</div>
+    <div class="leg-item"><span class="leg-dot" style="background:var(--docker)"></span>Docker</div>
+    <div class="leg-item"><span class="leg-dot" style="background:var(--accent)"></span>FastAPI + ML Models</div>
+    <div class="leg-item"><span class="leg-dot" style="background:var(--green)"></span>PostgreSQL</div>
+    <div class="leg-item"><span class="leg-dot" style="background:var(--purple)"></span>Admin Panel</div>
+    <div class="leg-item" style="gap:5px">
+      <svg width="20" height="8" viewBox="0 0 20 8"><line x1="0" y1="4" x2="14" y2="4" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 2"/><polygon points="14,1.5 19,4 14,6.5" fill="var(--accent)"/></svg>
+      Animated data flow
+    </div>
+  </div>
+</main>
+<script>
+(function(){
+  var btn=document.querySelector("[data-theme-toggle]"),html=document.documentElement;
+  function setTheme(t){html.setAttribute("data-theme",t);if(btn)btn.innerHTML=t==="dark"?"<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z\"/></svg>":"<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"5\"/><path d=\"M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42\"/></svg>";}
+  if(btn)btn.addEventListener("click",function(){setTheme(html.getAttribute("data-theme")==="dark"?"light":"dark");});
+})();
+(function(){
+  if(!window.IntersectionObserver)return;
+  var obs=new IntersectionObserver(function(entries){
+    entries.forEach(function(entry){
+      if(!entry.isIntersecting)return;
+      var chips=entry.target.querySelectorAll(".chip");
+      chips.forEach(function(c,i){setTimeout(function(){c.classList.add("vis");},i*28+60);});
+      obs.unobserve(entry.target);
+    });
+  },{threshold:0.1});
+  document.querySelectorAll(".layer,.infra-row,.server-group").forEach(function(el){obs.observe(el);});
+})();
+</script>
+</body>
+</html>

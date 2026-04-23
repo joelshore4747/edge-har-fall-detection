@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../config/runtime_config.dart';
 import '../config/runtime_labels.dart';
@@ -21,16 +24,19 @@ class SessionDetailPage extends StatefulWidget {
 }
 
 class _SessionDetailPageState extends State<SessionDetailPage> {
-  static const Color _accent = Color(0xFFC14953);
-  static const Color _pageBackground = Color(0xFF848FA5);
-  static const Color _cardBackground = Color(0xFFF9FAFC);
-  static const Color _softBackground = Color(0xFFF1F3F7);
-  static const Color _border = Color(0xFFD8DEE8);
-  static const Color _textPrimary = Color(0xFF17202D);
-  static const Color _textSecondary = Color(0xFF5F6878);
-  static const Color _success = Color(0xFF2FA36B);
-  static const Color _danger = Color(0xFFD64545);
-  static const Color _warning = Color(0xFFE79A1F);
+  static const Color _accent = Color(0xFF2C8A66);
+  static const Color _pageBackground = Color(0xFFF4F1E9);
+  static const Color _cardBackground = Color(0xFFFFFFFF);
+  static const Color _softBackground = Color(0xFFEDE9DF);
+  static const Color _border = Color(0xFFE5E1D4);
+  static const Color _textPrimary = Color(0xFF141713);
+  static const Color _textSecondary = Color(0xFF5A5E58);
+  static const Color _textTertiary = Color(0xFF8E918A);
+  static const Color _sageDeep = Color(0xFF1A5A44);
+  static const Color _sageSoft = Color(0xFFDCEBE3);
+  static const Color _danger = Color(0xFFC14C41);
+  static const Color _warning = Color(0xFFC29A20);
+  static const Color _sky = Color(0xFF6F9BB8);
 
   final SessionStorageService _storage = SessionStorageService();
   RuntimeApiService? _api;
@@ -692,17 +698,218 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     return '${mins}m ${secs.toString().padLeft(2, '0')}s';
   }
 
-  Color _levelColor(String level) {
-    switch (level.toLowerCase()) {
-      case 'high':
-        return _danger;
-      case 'medium':
-        return _warning;
-      case 'low':
-        return const Color(0xFFD4A72C);
-      default:
-        return _success;
+  String _dateLabel(DateTime value) {
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    final local = value.toLocal();
+    final month = months[local.month - 1];
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$month ${local.day}, ${local.year} · $hour:$minute';
+  }
+
+  String _titleCase(String value) {
+    return value
+        .trim()
+        .replaceAll('_', ' ')
+        .split(RegExp(r'\s+'))
+        .where((part) => part.isNotEmpty)
+        .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+        .join(' ');
+  }
+
+  List<SensorSample> _sessionSamples() {
+    final raw = _payload?['samples'];
+    if (raw is! List) {
+      return const <SensorSample>[];
     }
+
+    final samples = <SensorSample>[];
+    for (final item in raw) {
+      if (item is! Map) {
+        continue;
+      }
+      try {
+        samples.add(
+          SensorSample.fromJson(
+            item.map((key, value) => MapEntry(key.toString(), value)),
+          ),
+        );
+      } catch (_) {
+        // Ignore malformed samples in the detail summary.
+      }
+    }
+    return samples;
+  }
+
+  double _sessionDurationSeconds() {
+    final narrativeDuration = _result?.narrativeSummary?.totalDurationSeconds;
+    if (narrativeDuration != null && narrativeDuration > 0) {
+      return narrativeDuration;
+    }
+
+    final firstTs = _firstTimestamp();
+    final lastTs = _lastTimestamp();
+    if (firstTs != null && lastTs != null && lastTs > firstTs) {
+      return lastTs - firstTs;
+    }
+
+    return 60;
+  }
+
+  double? _samplingRateHz() {
+    final fromPayload = _asDouble(_payload?['sampling_rate_hz']);
+    if (fromPayload != null && fromPayload > 0) {
+      return fromPayload;
+    }
+
+    final samples = _sessionSamples();
+    if (samples.length < 2) {
+      return null;
+    }
+
+    final duration = samples.last.timestamp - samples.first.timestamp;
+    if (duration <= 0) {
+      return null;
+    }
+    return (samples.length - 1) / duration;
+  }
+
+  double? _gMax() {
+    final samples = _sessionSamples();
+    if (samples.isEmpty) {
+      return null;
+    }
+
+    var maxMagnitude = 0.0;
+    for (final sample in samples) {
+      final magnitude = math.sqrt(
+        sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az,
+      );
+      maxMagnitude = math.max(maxMagnitude, magnitude);
+    }
+
+    // Mobile accelerometer samples are commonly m/s^2. Convert to g for display.
+    return maxMagnitude / 9.80665;
+  }
+
+  int _gapCount() {
+    final samples = _sessionSamples();
+    if (samples.length < 2) {
+      return 0;
+    }
+
+    var gaps = 0;
+    for (var i = 1; i < samples.length; i++) {
+      final delta = samples[i].timestamp - samples[i - 1].timestamp;
+      if (delta > 0.25) {
+        gaps++;
+      }
+    }
+    return gaps;
+  }
+
+  String _narrativeHeadline() {
+    final result = _result;
+    if (result?.likelyFallDetected == true) {
+      return 'A moment worth reviewing.';
+    }
+    return 'A steady session.';
+  }
+
+  String _narrativeSubline() {
+    final summary = _result?.narrativeSummary;
+    if (summary != null && summary.summaryText.trim().isNotEmpty) {
+      return summary.summaryText.trim();
+    }
+
+    final activity = _titleCase(
+      _result?.topHarLabel ?? widget.session.activityLabel ?? _activityLabel,
+    );
+    final placement = _titleCase(widget.session.placement);
+    return '$activity recorded from $placement.';
+  }
+
+  List<TimelineEventModel> _keyEvents() {
+    final events = _result?.timelineEvents ?? const <TimelineEventModel>[];
+    if (events.isEmpty) {
+      return const <TimelineEventModel>[];
+    }
+
+    final sorted = [...events]
+      ..sort((a, b) {
+        if (a.likelyFall != b.likelyFall) {
+          return a.likelyFall ? -1 : 1;
+        }
+        return a.startTs.compareTo(b.startTs);
+      });
+    return sorted.take(4).toList(growable: false);
+  }
+
+  List<_TimelineSegment> _timelineSegments() {
+    final result = _result;
+    final duration = _sessionDurationSeconds();
+    if (result == null || result.timelineEvents.isEmpty) {
+      return [
+        _TimelineSegment(
+          startFraction: 0,
+          endFraction: 1,
+          label: _titleCase(_activityLabel),
+          color: _accent,
+        ),
+      ];
+    }
+
+    final colors = <Color>[_accent, _warning, _sky, _border];
+    final colorByLabel = <String, Color>{};
+    var colorIndex = 0;
+
+    return result.timelineEvents
+        .map((event) {
+          final label = _titleCase(event.activityLabel);
+          colorByLabel.putIfAbsent(label, () {
+            final color = event.likelyFall
+                ? _danger
+                : colors[colorIndex++ % colors.length];
+            return color;
+          });
+
+          return _TimelineSegment(
+            startFraction: (event.startTs / duration).clamp(0.0, 1.0),
+            endFraction: (event.endTs / duration).clamp(0.0, 1.0),
+            label: label,
+            color: colorByLabel[label]!,
+          );
+        })
+        .toList(growable: false);
+  }
+
+  List<_TimelineLegendItem> _timelineLegend() {
+    final seen = <String>{};
+    final items = <_TimelineLegendItem>[];
+    for (final segment in _timelineSegments()) {
+      if (seen.add(segment.label)) {
+        items.add(
+          _TimelineLegendItem(label: segment.label, color: segment.color),
+        );
+      }
+      if (items.length == 4) {
+        break;
+      }
+    }
+    return items;
   }
 
   Widget _card({
@@ -712,49 +919,22 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     return Container(
       decoration: BoxDecoration(
         color: _cardBackground,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: _border),
         boxShadow: const [
           BoxShadow(
-            color: Color(0x220F172A),
-            blurRadius: 24,
-            offset: Offset(0, 12),
+            color: Color(0x0A141713),
+            blurRadius: 2,
+            offset: Offset(0, 1),
+          ),
+          BoxShadow(
+            color: Color(0x0A141713),
+            blurRadius: 16,
+            offset: Offset(0, 4),
           ),
         ],
       ),
       child: Padding(padding: padding, child: child),
-    );
-  }
-
-  Widget _chip({
-    required String label,
-    required Color textColor,
-    IconData? icon,
-    Color? background,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
-      decoration: BoxDecoration(
-        color: background ?? textColor.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 15, color: textColor),
-            const SizedBox(width: 7),
-          ],
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-              color: textColor,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
@@ -766,27 +946,22 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
         children: [
           Text(
             title,
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -0.8,
+            style: GoogleFonts.instrumentSerif(
+              fontSize: 28,
+              height: 1.08,
+              fontWeight: FontWeight.w400,
+              letterSpacing: -0.6,
               color: _textPrimary,
-              fontFamilyFallback: [
-                'SF Pro Display',
-                'Inter',
-                'Segoe UI',
-                'Roboto',
-              ],
             ),
           ),
           const SizedBox(height: 4),
           Text(
             subtitle,
-            style: const TextStyle(
+            style: GoogleFonts.interTight(
               fontSize: 15,
               color: _textSecondary,
               height: 1.35,
-              fontWeight: FontWeight.w500,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ],
@@ -812,27 +987,26 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
           Icon(icon, size: 18, color: _textSecondary),
           const SizedBox(height: 14),
           Text(
-            label,
-            style: const TextStyle(
-              fontSize: 14,
-              color: _textSecondary,
-              fontWeight: FontWeight.w500,
+            label.toUpperCase(),
+            style: GoogleFonts.interTight(
+              fontSize: 10.5,
+              height: 1.2,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.9,
+              color: _textTertiary,
             ),
           ),
           const SizedBox(height: 6),
           Text(
             value,
-            style: const TextStyle(
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.jetBrainsMono(
               fontSize: 22,
-              fontWeight: FontWeight.w800,
+              height: 1.0,
+              fontWeight: FontWeight.w600,
               letterSpacing: -0.6,
               color: _textPrimary,
-              fontFamilyFallback: [
-                'SF Pro Display',
-                'Inter',
-                'Segoe UI',
-                'Roboto',
-              ],
             ),
           ),
         ],
@@ -919,153 +1093,49 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Widget _buildHeaderBanner() {
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        color: Colors.white.withValues(alpha: 0.16),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x220F172A),
-            blurRadius: 28,
-            offset: Offset(0, 14),
+    final isSafe = _result?.likelyFallDetected != true;
+
+    return Row(
+      children: [
+        IconButton(
+          onPressed: () => Navigator.of(context).maybePop(),
+          style: IconButton.styleFrom(
+            backgroundColor: Colors.white,
+            foregroundColor: _textPrimary,
+            side: const BorderSide(color: _border),
           ),
-        ],
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final wide = constraints.maxWidth >= 720;
-            final firstTs = _firstTimestamp();
-            final lastTs = _lastTimestamp();
-
-            final left = Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'SESSION REVIEW',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.9,
-                    color: Color(0xFFF3F4F8),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  widget.session.fileName,
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.9,
-                    color: Colors.white,
-                    fontFamilyFallback: [
-                      'SF Pro Display',
-                      'Inter',
-                      'Segoe UI',
-                      'Roboto',
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  _status,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    height: 1.45,
-                    color: Color(0xFFF4F6FA),
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    _chip(
-                      label: widget.session.subjectId,
-                      textColor: Colors.white,
-                      icon: Icons.person_outline,
-                      background: Colors.white.withValues(alpha: 0.16),
-                    ),
-                    _chip(
-                      label: widget.session.placement,
-                      textColor: Colors.white,
-                      icon: Icons.phone_android_outlined,
-                      background: Colors.white.withValues(alpha: 0.16),
-                    ),
-                    if (widget.session.hasPersistedSession)
-                      _chip(
-                        label: 'Server synced',
-                        textColor: Colors.white,
-                        icon: Icons.cloud_done_outlined,
-                        background: Colors.white.withValues(alpha: 0.16),
-                      ),
-                    _chip(
-                      label:
-                          '${firstTs?.toStringAsFixed(1) ?? '-'}s → ${lastTs?.toStringAsFixed(1) ?? '-'}s',
-                      textColor: Colors.white,
-                      icon: Icons.timelapse_rounded,
-                      background: Colors.white.withValues(alpha: 0.16),
-                    ),
-                  ],
-                ),
-              ],
-            );
-
-            final right = Wrap(
-              runSpacing: 10,
-              spacing: 10,
-              children: [
-                SizedBox(
-                  width: wide ? 220 : double.infinity,
-                  child: _uniformActionButton(
-                    label: _saving ? 'Saving...' : 'Save Labels',
-                    icon: Icons.save_outlined,
-                    onPressed: (_saving || !widget.session.hasLocalFile)
-                        ? null
-                        : _saveLabels,
-                    primary: true,
-                    loading: _saving,
-                  ),
-                ),
-                SizedBox(
-                  width: wide ? 220 : double.infinity,
-                  child: _uniformActionButton(
-                    label: _sending
-                        ? (widget.session.hasLocalFile
-                              ? 'Replaying...'
-                              : 'Refreshing...')
-                        : (widget.session.hasLocalFile
-                              ? 'Replay Through Server'
-                              : 'Refresh From Server'),
-                    icon: Icons.refresh_rounded,
-                    onPressed: _sending ? null : _sendSavedSessionToServer,
-                    loading: _sending,
-                  ),
-                ),
-              ],
-            );
-
-            if (!wide) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [left, const SizedBox(height: 20), right],
-              );
-            }
-
-            return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(flex: 7, child: left),
-                const SizedBox(width: 24),
-                Expanded(flex: 3, child: right),
-              ],
-            );
-          },
+          icon: const Icon(Icons.arrow_back_rounded),
+          tooltip: 'Back',
         ),
-      ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            _dateLabel(widget.session.savedAt),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: _textSecondary,
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: isSafe ? _sageSoft : const Color(0xFFF6DDD8),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            isSafe ? 'Safe' : 'Review',
+            style: GoogleFonts.interTight(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: isSafe ? _sageDeep : _danger,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1212,177 +1282,79 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Widget _buildNarrativeCard() {
-    final summary = _result?.narrativeSummary;
-    if (summary == null) {
-      return const SizedBox.shrink();
-    }
-
-    return _card(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _sectionTitle(
-            'Session Narrative',
-            'High-level interpretation of the full recording.',
-          ),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: _softBackground,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _border),
-            ),
-            child: Text(
-              summary.summaryText,
-              style: const TextStyle(
-                fontSize: 15,
-                height: 1.45,
-                fontWeight: FontWeight.w700,
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            TextSpan(
+              text: '${_narrativeHeadline()}\n',
+              style: GoogleFonts.instrumentSerif(
+                fontSize: 34,
+                height: 1.06,
+                letterSpacing: -0.7,
                 color: _textPrimary,
               ),
             ),
-          ),
-          const SizedBox(height: 16),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              const gap = 12.0;
-              final cols = constraints.maxWidth >= 760
-                  ? 4
-                  : constraints.maxWidth >= 420
-                  ? 2
-                  : 1;
-              final width = (constraints.maxWidth - gap * (cols - 1)) / cols;
-
-              return Wrap(
-                spacing: gap,
-                runSpacing: gap,
-                children: [
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'Dominant Activity',
-                      value: summary.dominantActivityLabel,
-                      icon: Icons.directions_walk_rounded,
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'Dominant Placement',
-                      value: summary.dominantPlacementLabel,
-                      icon: Icons.phone_android_outlined,
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'Events',
-                      value: summary.eventCount.toString(),
-                      icon: Icons.timeline_rounded,
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'Transitions',
-                      value: summary.transitionCount.toString(),
-                      icon: Icons.compare_arrows_rounded,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-        ],
+            TextSpan(
+              text: _narrativeSubline(),
+              style: GoogleFonts.instrumentSerif(
+                fontSize: 30,
+                height: 1.12,
+                letterSpacing: -0.5,
+                color: _textTertiary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildInferenceResultCard() {
-    final result = _result;
-    if (result == null) {
-      return _card(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _sectionTitle(
-              'Inference Result',
-              'Replay the session through the backend to populate this section.',
-            ),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(26),
-              decoration: BoxDecoration(
-                color: _softBackground,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: _border),
-              ),
-              child: const Column(
-                children: [
-                  Icon(
-                    Icons.insights_outlined,
-                    size: 42,
-                    color: _textSecondary,
-                  ),
-                  SizedBox(height: 10),
-                  Text(
-                    'No saved inference result yet',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: _textPrimary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+    final events = _keyEvents();
 
-    final levelColor = _levelColor(result.warningLevel);
-    final stateCounts = result.placementSummary.stateCounts;
+    return _card(
+      padding: EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 8),
+            child: _sectionTitle(
+              'Key events',
+              'The most relevant moments from this session.',
+            ),
+          ),
+          if (events.isEmpty)
+            _buildFallbackEventTile()
+          else
+            ...events.map(_buildTimelineEventTile),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSignalQualityCard() {
+    final gMax = _gMax();
+    final hz = _samplingRateHz();
+    final gaps = _gapCount();
 
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _sectionTitle(
-            'Inference Result',
-            'Latest saved or replayed model output for this session.',
+            'Signal quality',
+            'Sampling health for this recording.',
           ),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _chip(
-                label: result.warningLevel.toUpperCase(),
-                textColor: levelColor,
-                icon: Icons.warning_amber_rounded,
-              ),
-              _chip(
-                label: result.likelyFallDetected
-                    ? 'Likely Fall Detected'
-                    : 'No Strong Fall Detected',
-                textColor: result.likelyFallDetected ? _danger : _success,
-                icon: result.likelyFallDetected
-                    ? Icons.report_problem_outlined
-                    : Icons.verified_outlined,
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
           LayoutBuilder(
             builder: (context, constraints) {
-              const gap = 12.0;
-              final cols = constraints.maxWidth >= 760
-                  ? 4
-                  : constraints.maxWidth >= 420
-                  ? 2
-                  : 1;
-              final width = (constraints.maxWidth - gap * (cols - 1)) / cols;
+              const gap = 10.0;
+              final columns = constraints.maxWidth >= 620 ? 3 : 1;
+              final width =
+                  (constraints.maxWidth - gap * (columns - 1)) / columns;
 
               return Wrap(
                 spacing: gap,
@@ -1391,210 +1363,83 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                   SizedBox(
                     width: width,
                     child: _metricBox(
-                      label: 'Top Activity',
-                      value: result.topHarLabel ?? '-',
-                      icon: Icons.directions_walk_rounded,
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'HAR Fraction',
-                      value: result.topHarFraction == null
-                          ? '-'
-                          : result.topHarFraction!.toStringAsFixed(3),
-                      icon: Icons.pie_chart_outline_rounded,
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'Grouped Events',
-                      value: result.groupedFallEventCount.toString(),
-                      icon: Icons.timeline_rounded,
-                    ),
-                  ),
-                  SizedBox(
-                    width: width,
-                    child: _metricBox(
-                      label: 'Fall Probability',
-                      value: result.topFallProbability == null
-                          ? '-'
-                          : result.topFallProbability!.toStringAsFixed(4),
+                      label: 'g-max',
+                      value: gMax == null ? '-' : '${gMax.toStringAsFixed(2)}g',
                       icon: Icons.show_chart_rounded,
+                    ),
+                  ),
+                  SizedBox(
+                    width: width,
+                    child: _metricBox(
+                      label: 'Hz',
+                      value: hz == null ? '-' : hz.toStringAsFixed(1),
+                      icon: Icons.speed_rounded,
+                    ),
+                  ),
+                  SizedBox(
+                    width: width,
+                    child: _metricBox(
+                      label: 'Gaps',
+                      value: gaps.toString(),
+                      icon: Icons.more_horiz_rounded,
                     ),
                   ),
                 ],
               );
             },
           ),
-          const SizedBox(height: 16),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: _softBackground,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: _border),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Placement Summary',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w800,
-                    color: _textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text('State: ${result.placementSummary.placementState}'),
-                const SizedBox(height: 6),
-                Text(
-                  'Confidence: ${result.placementSummary.placementConfidence?.toStringAsFixed(3) ?? '-'}',
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'State Fraction: ${result.placementSummary.stateFraction?.toStringAsFixed(3) ?? '-'}',
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  'State Counts: ${stateCounts.entries.map((e) => '${e.key}:${e.value}').join(', ')}',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: _textSecondary,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            result.recommendedMessage,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-              color: _textPrimary,
-            ),
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildTimelineEventTile(TimelineEventModel event) {
-    final eventColor = event.likelyFall
-        ? _danger
-        : event.eventKind == 'placement_change'
-        ? _warning
-        : _accent;
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _softBackground,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              _chip(
-                label: _formatSeconds(event.startTs),
-                textColor: _textPrimary,
-                icon: Icons.schedule_rounded,
-                background: Colors.white,
-              ),
-              _chip(
-                label: event.eventKind.replaceAll('_', ' '),
-                textColor: eventColor,
-                background: eventColor.withValues(alpha: 0.10),
-              ),
-              if (event.likelyFall)
-                _chip(
-                  label: 'fall-like',
-                  textColor: _danger,
-                  background: _danger.withValues(alpha: 0.10),
-                ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            event.description,
-            style: const TextStyle(
-              fontSize: 16,
-              height: 1.4,
-              fontWeight: FontWeight.w700,
-              color: _textPrimary,
-            ),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 16,
-            runSpacing: 8,
-            children: [
-              Text(
-                'Activity: ${event.humanActivityLabel}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: _textSecondary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              Text(
-                'Placement: ${event.humanPlacementLabel}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: _textSecondary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              Text(
-                'Duration: ${_formatSeconds(event.durationSeconds)}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: _textSecondary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              Text(
-                'Peak fall prob: ${event.fallProbabilityPeak?.toStringAsFixed(3) ?? '-'}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: _textSecondary,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTimelineCard() {
-    final result = _result;
-    if (result == null || result.timelineEvents.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
+  Widget _buildReviewActionsCard() {
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle(
-            'Timeline Events',
-            'Interpreted session events built from activity, placement, and fall signals.',
+          _sectionTitle('Review tools', _status),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              const gap = 10.0;
+              final columns = constraints.maxWidth >= 620 ? 2 : 1;
+              final width =
+                  (constraints.maxWidth - gap * (columns - 1)) / columns;
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: [
+                  SizedBox(
+                    width: width,
+                    child: _uniformActionButton(
+                      label: _saving ? 'Saving...' : 'Save Labels',
+                      icon: Icons.save_outlined,
+                      onPressed: (_saving || !widget.session.hasLocalFile)
+                          ? null
+                          : _saveLabels,
+                      primary: true,
+                      loading: _saving,
+                    ),
+                  ),
+                  SizedBox(
+                    width: width,
+                    child: _uniformActionButton(
+                      label: _sending
+                          ? (widget.session.hasLocalFile
+                                ? 'Replaying...'
+                                : 'Refreshing...')
+                          : (widget.session.hasLocalFile
+                                ? 'Replay Through Server'
+                                : 'Refresh From Server'),
+                      icon: Icons.refresh_rounded,
+                      onPressed: _sending ? null : _sendSavedSessionToServer,
+                      loading: _sending,
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
-          ...result.timelineEvents.map(_buildTimelineEventTile),
         ],
       ),
     );
@@ -1610,56 +1455,230 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle(
-            'Transitions',
-            'Detected changes between timeline events.',
-          ),
-          ...result.transitionEvents.map(
-            (transition) => Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: _softBackground,
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: _border),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Icon(
-                    Icons.compare_arrows_rounded,
-                    color: _textSecondary,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
+          _sectionTitle('Transitions', 'Changes detected between key events.'),
+          ...result.transitionEvents
+              .take(3)
+              .map(
+                (transition) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(
+                        Icons.compare_arrows_rounded,
+                        color: _textSecondary,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
                           transition.description,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: _textPrimary,
+                          style: GoogleFonts.interTight(
+                            fontSize: 14,
                             height: 1.35,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'At ${_formatSeconds(transition.transitionTs)}',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: _textSecondary,
                             fontWeight: FontWeight.w600,
+                            color: _textPrimary,
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      Text(
+                        _formatSeconds(transition.transitionTs),
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 12,
+                          color: _textSecondary,
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimelineEventTile(TimelineEventModel event) {
+    final eventColor = event.likelyFall
+        ? _danger
+        : event.eventKind == 'placement_change'
+        ? _warning
+        : _accent;
+    final icon = event.likelyFall
+        ? Icons.priority_high_rounded
+        : event.eventKind == 'placement_change'
+        ? Icons.phone_android_outlined
+        : Icons.directions_walk_rounded;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: Color(0xFFEEEAE0))),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _border),
+            ),
+            child: Icon(icon, size: 19, color: eventColor),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  event.description.isEmpty
+                      ? event.humanActivityLabel
+                      : event.description,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.interTight(
+                    fontSize: 14,
+                    height: 1.25,
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${event.humanActivityLabel} · ${_formatSeconds(event.durationSeconds)}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.interTight(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: _textTertiary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            _formatSeconds(event.startTs),
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: _textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFallbackEventTile() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: _border),
+            ),
+            child: const Icon(Icons.check_rounded, size: 19, color: _sageDeep),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              _result == null
+                  ? 'Replay this session to generate key events.'
+                  : 'No key events needed review.',
+              style: GoogleFonts.interTight(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: _textPrimary,
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTimelineLegendRow() {
+    final items = _timelineLegend();
+    return Wrap(
+      spacing: 12,
+      runSpacing: 8,
+      children: [
+        for (final item in items)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  color: item.color,
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                item.label,
+                style: GoogleFonts.interTight(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _textSecondary,
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildTimelineCard() {
+    return _card(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _sectionTitle(
+            'Timeline',
+            'A compact view of activity across the session.',
+          ),
+          Container(
+            height: 40,
+            decoration: BoxDecoration(
+              color: _softBackground,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _border),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(11),
+              child: CustomPaint(
+                painter: _TimelineStripPainter(segments: _timelineSegments()),
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              for (final marker in const ['0s', '15s', '30s', '45s', '60s'])
+                Text(
+                  marker,
+                  style: GoogleFonts.jetBrainsMono(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: _textTertiary,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _buildTimelineLegendRow(),
         ],
       ),
     );
@@ -1758,47 +1777,27 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Widget _buildContentLayout() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 1080;
-
-        final main = Column(
-          children: [
-            _buildHeaderBanner(),
-            const SizedBox(height: 16),
-            _buildInferenceResultCard(),
-            const SizedBox(height: 16),
-            _buildNarrativeCard(),
-            const SizedBox(height: 16),
-            _buildTimelineCard(),
-            const SizedBox(height: 16),
-            _buildTransitionCard(),
-          ],
-        );
-
-        final side = Column(
-          children: [
-            _buildSessionInfoCard(),
-            const SizedBox(height: 16),
-            _buildAnnotationCard(),
-            const SizedBox(height: 16),
-            _buildFeedbackCard(),
-          ],
-        );
-
-        if (!wide) {
-          return Column(children: [main, const SizedBox(height: 16), side]);
-        }
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(flex: 6, child: main),
-            const SizedBox(width: 16),
-            Expanded(flex: 4, child: side),
-          ],
-        );
-      },
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildHeaderBanner(),
+        _buildNarrativeCard(),
+        _buildTimelineCard(),
+        const SizedBox(height: 16),
+        _buildInferenceResultCard(),
+        const SizedBox(height: 16),
+        _buildSignalQualityCard(),
+        const SizedBox(height: 16),
+        _buildTransitionCard(),
+        const SizedBox(height: 16),
+        _buildSessionInfoCard(),
+        const SizedBox(height: 16),
+        _buildReviewActionsCard(),
+        const SizedBox(height: 16),
+        _buildAnnotationCard(),
+        const SizedBox(height: 16),
+        _buildFeedbackCard(),
+      ],
     );
   }
 
@@ -1806,38 +1805,78 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _pageBackground,
-      appBar: AppBar(
-        backgroundColor: _pageBackground,
-        foregroundColor: Colors.white,
-        title: const Text(
-          'Session Review',
-          style: TextStyle(
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.8,
-            color: Colors.white,
-            fontFamilyFallback: [
-              'SF Pro Display',
-              'Inter',
-              'Segoe UI',
-              'Roboto',
-            ],
-          ),
-        ),
-      ),
       body: SafeArea(
         child: _loading
-            ? const Center(child: CircularProgressIndicator())
+            ? const Center(child: CircularProgressIndicator(color: _accent))
             : Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1220),
+                  constraints: const BoxConstraints(maxWidth: 760),
                   child: ListView(
-                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
                     children: [_buildContentLayout()],
                   ),
                 ),
               ),
       ),
     );
+  }
+}
+
+class _TimelineSegment {
+  const _TimelineSegment({
+    required this.startFraction,
+    required this.endFraction,
+    required this.label,
+    required this.color,
+  });
+
+  final double startFraction;
+  final double endFraction;
+  final String label;
+  final Color color;
+}
+
+class _TimelineLegendItem {
+  const _TimelineLegendItem({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+}
+
+class _TimelineStripPainter extends CustomPainter {
+  const _TimelineStripPainter({required this.segments});
+
+  final List<_TimelineSegment> segments;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (segments.isEmpty) {
+      final paint = Paint()..color = const Color(0xFFE5E1D4);
+      canvas.drawRect(Offset.zero & size, paint);
+      return;
+    }
+
+    for (final segment in segments) {
+      final start = (segment.startFraction * size.width).clamp(0.0, size.width);
+      final end = (segment.endFraction * size.width).clamp(0.0, size.width);
+      final width = math.max(2.0, end - start);
+      final rect = Rect.fromLTWH(start, 0, width, size.height);
+      final paint = Paint()..color = segment.color;
+      canvas.drawRect(rect, paint);
+    }
+
+    final markerPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.62)
+      ..strokeWidth = 1;
+    for (var i = 1; i < 4; i++) {
+      final x = size.width * i / 4;
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), markerPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TimelineStripPainter oldDelegate) {
+    return oldDelegate.segments != segments;
   }
 }
 

@@ -21,6 +21,7 @@ class RuntimeIdentityService {
   RuntimeIdentityService._();
 
   static final RuntimeIdentityService instance = RuntimeIdentityService._();
+  static const int minPasswordLength = 8;
 
   static const String _identityFileName = 'runtime_identity.json';
   static const String _identityFolderName = 'runtime_auth';
@@ -88,6 +89,11 @@ class RuntimeIdentityService {
     if (normalizedUsername.isEmpty || password.isEmpty) {
       throw RuntimeIdentityException('Username and password are required.');
     }
+    if (password.length < minPasswordLength) {
+      throw RuntimeIdentityException(
+        'Password must be at least $minPasswordLength characters.',
+      );
+    }
 
     final identity = RuntimeIdentity(
       username: normalizedUsername,
@@ -104,14 +110,24 @@ class RuntimeIdentityService {
   Future<RuntimeIdentity> signUp({
     required String username,
     required String password,
-    required String subjectId,
     String? displayName,
   }) async {
+    final normalizedUsername = username.trim();
+    if (normalizedUsername.isEmpty || password.isEmpty) {
+      throw RuntimeIdentityException('Username and password are required.');
+    }
+    if (password.length < minPasswordLength) {
+      throw RuntimeIdentityException(
+        'Password must be at least $minPasswordLength characters.',
+      );
+    }
+
+    final subjectId = _generateSubjectId(normalizedUsername);
     final identity = RuntimeIdentity(
-      username: username.trim(),
+      username: normalizedUsername,
       password: password,
-      subjectId: subjectId.trim(),
-      displayName: _cleanText(displayName) ?? subjectId.trim(),
+      subjectId: subjectId,
+      displayName: _cleanText(displayName) ?? normalizedUsername,
       registered: false,
       provisioningMode: 'manual_signup',
     );
@@ -244,6 +260,18 @@ class RuntimeIdentityService {
       return null;
     }
     return trimmed;
+  }
+
+  String _generateSubjectId(String username) {
+    final normalized = username
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    final fallback = normalized.isEmpty ? 'subject' : normalized;
+    final suffix = _randomString(length: 6, alphabet: _lowerAlphaNum);
+    return '${fallback}_$suffix';
   }
 
   Future<File> _identityFile() async {
