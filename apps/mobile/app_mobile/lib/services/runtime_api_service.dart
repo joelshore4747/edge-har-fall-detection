@@ -302,6 +302,40 @@ class RuntimeApiService {
     return ApiResultSummary.fromJson(json);
   }
 
+  /// Lightweight session inference for the live recording chips. Uses
+  /// task_type=debug so the backend skips persistence, and disables every
+  /// optional output we don't need — only the alert/HAR/fall summaries are
+  /// returned. Safe to call every few seconds during recording.
+  Future<ApiResultSummary> submitLiveWindow({
+    required String sessionId,
+    required String subjectId,
+    required String placement,
+    required List<SensorSample> samples,
+    String devicePlatform = 'unknown',
+    double? samplingRateHz,
+  }) async {
+    return submitSession(
+      sessionId: sessionId,
+      subjectId: subjectId,
+      placement: placement,
+      samples: samples,
+      taskType: 'debug',
+      datasetName: 'APP_RUNTIME_LIVE',
+      sourceType: 'mobile_app',
+      devicePlatform: devicePlatform,
+      recordingMode: 'live_capture',
+      runtimeMode: 'mobile_live',
+      samplingRateHz: samplingRateHz,
+      includeHarWindows: false,
+      includeFallWindows: false,
+      includeCombinedTimeline: false,
+      includeGroupedFallEvents: true,
+      includePointTimeline: false,
+      includeTimelineEvents: false,
+      includeTransitionEvents: false,
+    );
+  }
+
   Future<RuntimeFeedbackAck> submitFeedback({
     required String sessionId,
     required String userFeedback,

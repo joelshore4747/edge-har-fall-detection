@@ -43,6 +43,19 @@ class SensorRecorderService {
   DateTime? _lastGyroTimestampUtc;
 
   List<SensorSample> get samples => List.unmodifiable(_samples);
+
+  List<SensorSample> samplesInLastSeconds(double seconds) {
+    if (_samples.isEmpty || seconds <= 0) {
+      return const <SensorSample>[];
+    }
+    final cutoff = _samples.last.timestamp - seconds;
+    final start = _samples.indexWhere((s) => s.timestamp >= cutoff);
+    if (start <= 0) {
+      return List.unmodifiable(_samples);
+    }
+    return List.unmodifiable(_samples.sublist(start));
+  }
+
   SensorRecorderState get state => _state;
   bool get isRecording => _state == SensorRecorderState.recording;
   Object? get lastError => _lastError;

@@ -664,6 +664,77 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     return _asDouble(last['timestamp']);
   }
 
+  double? _precisionFromFeedback(List<Map<String, dynamic>> entries) {
+    var confirmed = 0;
+    var falseAlarm = 0;
+    for (final entry in entries) {
+      final type = (entry['user_feedback'] ?? '').toString();
+      if (type == 'confirmed_fall') confirmed += 1;
+      if (type == 'false_alarm') falseAlarm += 1;
+    }
+    final denom = confirmed + falseAlarm;
+    if (denom == 0) return null;
+    return confirmed / denom;
+  }
+
+  Widget _buildFeedbackTile(Map<String, dynamic> entry) {
+    final type = (entry['user_feedback'] ?? 'unknown').toString();
+    final recordedAt = entry['recorded_at']?.toString();
+    DateTime? when;
+    if (recordedAt != null) {
+      when = DateTime.tryParse(recordedAt);
+    }
+    final whenText = when == null
+        ? '—'
+        : '${when.toLocal().year}-${when.toLocal().month.toString().padLeft(2, '0')}-${when.toLocal().day.toString().padLeft(2, '0')} '
+            '${when.toLocal().hour.toString().padLeft(2, '0')}:${when.toLocal().minute.toString().padLeft(2, '0')}';
+    final color = type == 'confirmed_fall'
+        ? _danger
+        : type == 'false_alarm'
+            ? _accent
+            : _warning;
+    final icon = type == 'confirmed_fall'
+        ? Icons.priority_high_rounded
+        : type == 'false_alarm'
+            ? Icons.cancel_outlined
+            : Icons.help_outline_rounded;
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 16, color: color),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              _titleCase(type),
+              style: GoogleFonts.interTight(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: _textPrimary,
+              ),
+            ),
+          ),
+          Text(
+            whenText,
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 11,
+              color: _textSecondary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<Map<String, dynamic>> _feedbackEntries() {
     final payload = _payload;
     if (payload == null) {
@@ -1639,6 +1710,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Widget _buildTimelineCard() {
+    final fallPoints = _fallProbabilityPoints();
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1662,6 +1734,37 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
               ),
             ),
           ),
+          if (fallPoints.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              height: 36,
+              decoration: BoxDecoration(
+                color: _softBackground,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _border),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(9),
+                child: CustomPaint(
+                  painter: _FallProbabilityPainter(
+                    points: fallPoints,
+                    threshold: 0.75,
+                    lineColor: _danger,
+                    thresholdColor: _danger.withValues(alpha: 0.5),
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Fall probability · dashed line at 0.75 (PROBABLE_FALL)',
+              style: GoogleFonts.jetBrainsMono(
+                fontSize: 10.5,
+                color: _textTertiary,
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1684,9 +1787,35 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     );
   }
 
+  List<Offset> _fallProbabilityPoints() {
+    final result = _result;
+    if (result == null) return const <Offset>[];
+    final timeline = result.pointTimeline;
+    if (timeline.isEmpty) return const <Offset>[];
+
+    final duration = _sessionDurationSeconds();
+    if (duration <= 0) return const <Offset>[];
+
+    final points = <Offset>[];
+    for (final p in timeline) {
+      final prob = p.fallProbability;
+      if (prob == null) continue;
+      final x = (p.midpointTs / duration).clamp(0.0, 1.0);
+      final y = prob.clamp(0.0, 1.0);
+      points.add(Offset(x, y));
+    }
+    return points;
+  }
+
   Widget _buildFeedbackCard() {
     final feedbackEntries = _feedbackEntries();
-    final latest = feedbackEntries.isEmpty ? null : feedbackEntries.last;
+    final sorted = [...feedbackEntries]
+      ..sort(
+        (a, b) => (b['recorded_at']?.toString() ?? '').compareTo(
+          a['recorded_at']?.toString() ?? '',
+        ),
+      );
+    final precision = _precisionFromFeedback(feedbackEntries);
 
     return _card(
       child: Column(
@@ -1696,7 +1825,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
             'Feedback',
             'Record whether the alert was correct and keep an audit trail.',
           ),
-          if (latest != null)
+          if (sorted.isEmpty)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
@@ -1706,15 +1835,49 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                 border: Border.all(color: _border),
               ),
               child: Text(
-                'Latest feedback: ${(latest['user_feedback'] ?? 'unknown').toString()}',
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: _textPrimary,
+                'No feedback recorded for this session yet.',
+                style: GoogleFonts.interTight(
+                  fontSize: 13,
+                  color: _textSecondary,
                 ),
               ),
+            )
+          else
+            Column(
+              children: [
+                for (final entry in sorted) _buildFeedbackTile(entry),
+                if (precision != null) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _sageSoft,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.equalizer_rounded,
+                          size: 16,
+                          color: _sageDeep,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Precision after feedback (this session): '
+                          '${(precision * 100).round()}%',
+                          style: GoogleFonts.interTight(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _sageDeep,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
             ),
-          if (latest != null) const SizedBox(height: 16),
+          const SizedBox(height: 16),
           LayoutBuilder(
             builder: (context, constraints) {
               const gap = 12.0;
@@ -1877,6 +2040,64 @@ class _TimelineStripPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _TimelineStripPainter oldDelegate) {
     return oldDelegate.segments != segments;
+  }
+}
+
+class _FallProbabilityPainter extends CustomPainter {
+  const _FallProbabilityPainter({
+    required this.points,
+    required this.threshold,
+    required this.lineColor,
+    required this.thresholdColor,
+  });
+
+  final List<Offset> points;
+  final double threshold;
+  final Color lineColor;
+  final Color thresholdColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final thresholdY = size.height * (1.0 - threshold);
+    final dashPaint = Paint()
+      ..color = thresholdColor
+      ..strokeWidth = 1.2;
+    const dashWidth = 4.0;
+    const gapWidth = 4.0;
+    var x = 0.0;
+    while (x < size.width) {
+      final next = math.min(x + dashWidth, size.width);
+      canvas.drawLine(Offset(x, thresholdY), Offset(next, thresholdY), dashPaint);
+      x += dashWidth + gapWidth;
+    }
+
+    if (points.isEmpty) return;
+
+    final path = Path();
+    for (var i = 0; i < points.length; i++) {
+      final px = points[i].dx * size.width;
+      final py = (1.0 - points[i].dy) * size.height;
+      if (i == 0) {
+        path.moveTo(px, py);
+      } else {
+        path.lineTo(px, py);
+      }
+    }
+
+    final linePaint = Paint()
+      ..color = lineColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6
+      ..strokeJoin = StrokeJoin.round
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(path, linePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _FallProbabilityPainter oldDelegate) {
+    return oldDelegate.points != points ||
+        oldDelegate.threshold != threshold ||
+        oldDelegate.lineColor != lineColor;
   }
 }
 

@@ -10,6 +10,8 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:google_fonts/google_fonts.dart';
 
 import '../config/runtime_config.dart';
+import '../config/runtime_labels.dart';
+import '../models/persisted_session.dart';
 import '../models/runtime_identity.dart';
 import '../models/saved_session.dart';
 import '../models/sensor_sample.dart';
@@ -64,6 +66,10 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   static const Color _alertBg = Color(0xFF1F0A08);
   static const Color _alertRed = Color(0xFFFF8378);
   static const Duration _fallAlertDuration = Duration(seconds: 30);
+  // Backend's PROBABLE_FALL threshold. Below this, a session may still be
+  // flagged likely_fall_detected (POSSIBLE_FALL) but we treat it as
+  // "review suggested" rather than a confirmed fall alert.
+  static const double _probableFallThreshold = 0.75;
 
   static const List<String> _placementOptions = <String>[
     'pocket',
@@ -78,6 +84,14 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   final SessionStorageService _storage = SessionStorageService();
   Timer? _recordingUiTimer;
   Timer? _fallAlertTimer;
+  Timer? _liveInferenceTimer;
+  bool _liveInferenceInflight = false;
+  String? _liveActivityLabelLive; // canonical backend label, null = idle/unknown
+  double? _liveFallProbability;
+  _LiveInferenceStatus _liveInferenceStatus = _LiveInferenceStatus.idle;
+  _LoadState _caregiverLoadState = _LoadState.idle;
+  _CaregiverSummary? _caregiverSummary;
+  String? _caregiverError;
 
   final TextEditingController _subjectController = TextEditingController();
 
@@ -114,6 +128,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   void dispose() {
     _recordingUiTimer?.cancel();
     _fallAlertTimer?.cancel();
+    _liveInferenceTimer?.cancel();
     _api?.dispose();
     _recorder.dispose();
     _subjectController.dispose();
@@ -164,6 +179,78 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     _recordingUiTimer = null;
   }
 
+  void _startLiveInferenceTimer() {
+    _liveInferenceTimer?.cancel();
+    _liveActivityLabelLive = null;
+    _liveFallProbability = null;
+    _liveInferenceStatus = _LiveInferenceStatus.idle;
+    _liveInferenceTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) => _tickLiveInference(),
+    );
+  }
+
+  void _stopLiveInferenceTimer() {
+    _liveInferenceTimer?.cancel();
+    _liveInferenceTimer = null;
+    _liveInferenceInflight = false;
+    if (mounted) {
+      setState(() {
+        _liveInferenceStatus = _LiveInferenceStatus.idle;
+        _liveActivityLabelLive = null;
+        _liveFallProbability = null;
+      });
+    }
+  }
+
+  Future<void> _tickLiveInference() async {
+    if (!mounted || !_recorder.isRecording) return;
+    if (_liveInferenceInflight) return;
+    final api = _api;
+    if (api == null) return;
+
+    final window = _recorder.samplesInLastSeconds(5.0);
+    if (window.length < 32) return;
+
+    _liveInferenceInflight = true;
+    if (mounted) {
+      setState(() => _liveInferenceStatus = _LiveInferenceStatus.inflight);
+    }
+
+    try {
+      final result = await api.submitLiveWindow(
+        sessionId: _activeSessionId ?? _newSessionId(),
+        subjectId: _normalisedSubjectId(),
+        placement: _normalisedPlacement(),
+        samples: window,
+        devicePlatform: _devicePlatformValue(),
+        samplingRateHz: _recorder.estimatedSamplingRateHz,
+      );
+
+      if (!mounted || !_recorder.isRecording) return;
+
+      final harLabel = normaliseRuntimeActivityLabel(
+        result.topHarLabel,
+        fallback: 'other',
+      );
+      final fallProb = result.topFallProbability ?? 0.0;
+      final isCertainFall =
+          fallProb >= _probableFallThreshold &&
+          result.groupedFallEventCount >= 1;
+
+      setState(() {
+        _liveActivityLabelLive = isCertainFall ? 'fall' : harLabel;
+        _liveFallProbability = fallProb;
+        _liveInferenceStatus = _LiveInferenceStatus.ok;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _liveInferenceStatus = _LiveInferenceStatus.error);
+    } finally {
+      _liveInferenceInflight = false;
+    }
+  }
+
   void _stopFallAlertTimer() {
     _fallAlertTimer?.cancel();
     _fallAlertTimer = null;
@@ -194,17 +281,207 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     });
   }
 
+  bool _isCertainFall(ApiResultSummary? summary) {
+    if (summary == null || !summary.likelyFallDetected) {
+      return false;
+    }
+    final prob = summary.topFallProbability ?? 0.0;
+    final groupedEvents = summary.groupedFallEventCount;
+    return prob >= _probableFallThreshold && groupedEvents >= 1;
+  }
+
+  bool _isReviewSuggested(ApiResultSummary? summary) {
+    if (summary == null || !summary.likelyFallDetected) {
+      return false;
+    }
+    return !_isCertainFall(summary);
+  }
+
+  Future<void> _loadCaregiverSummary({bool force = false}) async {
+    if (_caregiverLoadState == _LoadState.loading) return;
+    if (_caregiverLoadState == _LoadState.ready && !force) return;
+    final api = _api;
+    if (api == null) return;
+
+    setState(() {
+      _caregiverLoadState = _LoadState.loading;
+      _caregiverError = null;
+    });
+
+    try {
+      final sessions = await api.listPersistedSessions(limit: 200);
+      if (!mounted) return;
+      final summary = _aggregateCaregiverSummary(sessions);
+      setState(() {
+        _caregiverSummary = summary;
+        _caregiverLoadState = _LoadState.ready;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _caregiverError = e.toString();
+        _caregiverLoadState = _LoadState.error;
+      });
+    }
+  }
+
+  _CaregiverSummary _aggregateCaregiverSummary(
+    List<PersistedSessionSummary> sessions,
+  ) {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final monthStart = DateTime(now.year, now.month);
+
+    double activityTodaySeconds = 0.0;
+    int fallsThisMonth = 0;
+    final fallDays = <DateTime>{};
+    DateTime? lastSessionAt;
+
+    for (final s in sessions) {
+      final startedAt =
+          s.session.recordingStartedAt ?? s.session.uploadedAt;
+      final localStart = startedAt.toLocal();
+      lastSessionAt = lastSessionAt == null || localStart.isAfter(lastSessionAt)
+          ? localStart
+          : lastSessionAt;
+
+      if (!localStart.isBefore(todayStart)) {
+        activityTodaySeconds += s.session.durationSeconds ?? 0.0;
+      }
+
+      final isCertainFall = (s.latestLikelyFallDetected ?? false) &&
+          (s.latestTopFallProbability ?? 0.0) >= _probableFallThreshold &&
+          (s.latestGroupedFallEventCount ?? 0) >= 1;
+      if (isCertainFall) {
+        if (!localStart.isBefore(monthStart)) {
+          fallsThisMonth += 1;
+        }
+        fallDays.add(DateTime(localStart.year, localStart.month, localStart.day));
+      }
+    }
+
+    int daysClear = 0;
+    for (var i = 0; i < 365; i++) {
+      final day = todayStart.subtract(Duration(days: i));
+      if (fallDays.contains(day)) break;
+      daysClear += 1;
+    }
+
+    final recent = _buildCaregiverRecentSessions(sessions);
+
+    return _CaregiverSummary(
+      activityTodaySeconds: activityTodaySeconds,
+      fallsThisMonth: fallsThisMonth,
+      daysClearStreak: daysClear,
+      totalSessions: sessions.length,
+      lastSessionAt: lastSessionAt,
+      recentSessions: recent,
+    );
+  }
+
+  List<_CaregiverRecentSession> _buildCaregiverRecentSessions(
+    List<PersistedSessionSummary> sessions,
+  ) {
+    final sorted = [...sessions]
+      ..sort((a, b) => b.sortTimestamp.compareTo(a.sortTimestamp));
+    return sorted.take(3).map((s) {
+      final isCertainFall = (s.latestLikelyFallDetected ?? false) &&
+          (s.latestTopFallProbability ?? 0.0) >= _probableFallThreshold &&
+          (s.latestGroupedFallEventCount ?? 0) >= 1;
+      final har = normaliseRuntimeActivityLabel(
+        s.latestTopHarLabel,
+        fallback: 'other',
+      );
+      final IconData icon;
+      Color tone;
+      String label;
+      if (isCertainFall) {
+        icon = Icons.priority_high_rounded;
+        tone = _danger;
+        label = 'Probable fall';
+      } else {
+        switch (har) {
+          case 'walking':
+            icon = Icons.directions_walk;
+            tone = _accent;
+            label = 'Walking session';
+            break;
+          case 'stairs':
+            icon = Icons.stairs;
+            tone = _warning;
+            label = 'Stairs session';
+            break;
+          case 'static':
+            icon = Icons.hotel;
+            tone = const Color(0xFF6F9BB8);
+            label = 'Resting';
+            break;
+          default:
+            icon = Icons.home;
+            tone = _textSecondary;
+            label = 'Session';
+        }
+      }
+
+      return _CaregiverRecentSession(
+        label: label,
+        timeText: _formatRelativeTimeLabel(s.sortTimestamp.toLocal()),
+        icon: icon,
+        tone: tone,
+      );
+    }).toList(growable: false);
+  }
+
+  String _formatRelativeTimeLabel(DateTime when) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final whenDay = DateTime(when.year, when.month, when.day);
+    final hourMinute =
+        '${when.hour.toString().padLeft(2, '0')}:${when.minute.toString().padLeft(2, '0')}';
+    final delta = today.difference(whenDay).inDays;
+    if (delta == 0) return '$hourMinute today';
+    if (delta == 1) return 'Yesterday · $hourMinute';
+    if (delta < 7) return '$delta days ago · $hourMinute';
+    return '${when.year}-${when.month.toString().padLeft(2, '0')}-${when.day.toString().padLeft(2, '0')}';
+  }
+
+  String _formatActivityHours(double seconds) {
+    if (seconds <= 0) return '0';
+    final totalMinutes = (seconds / 60).round();
+    if (totalMinutes < 60) return totalMinutes.toString();
+    final hours = totalMinutes / 60.0;
+    if (hours < 10) return hours.toStringAsFixed(1);
+    return hours.round().toString();
+  }
+
+  String _formatActivityUnit(double seconds) {
+    if (seconds <= 0) return 'min';
+    final totalMinutes = (seconds / 60).round();
+    return totalMinutes < 60 ? 'min' : 'hrs';
+  }
+
+  String _fallAlertFooterText() {
+    final result = _result;
+    final prob = result?.topFallProbability;
+    final groupedEvents = result?.groupedFallEventCount ?? 0;
+    if (prob == null) {
+      return 'IMPACT DETECTED';
+    }
+    final probPct = (prob.clamp(0.0, 1.0) * 100).round();
+    return 'FALL PROBABILITY $probPct% · $groupedEvents EVENT${groupedEvents == 1 ? '' : 'S'}';
+  }
+
   void _setResultVisibility(ApiResultSummary? summary) {
     _result = summary;
     _showFallAlert = false;
-    _showResultPage = summary != null && !summary.likelyFallDetected;
+    _showResultPage = summary != null && !_isCertainFall(summary);
     if (summary == null) {
       _fallAlertStartedAt = null;
     }
   }
 
   void _presentFallAlertIfNeeded(ApiResultSummary? summary) {
-    if (summary?.likelyFallDetected == true) {
+    if (_isCertainFall(summary)) {
       _startFallAlert();
     } else {
       _stopFallAlertTimer();
@@ -383,8 +660,10 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
         _status = 'Recording...';
       });
       _startRecordingUiTimer();
+      _startLiveInferenceTimer();
     } catch (e) {
       _stopRecordingUiTimer();
+      _stopLiveInferenceTimer();
       if (!mounted) return;
       setState(() {
         _status = 'Failed to start recording: $e';
@@ -396,6 +675,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     try {
       await _recorder.stop();
       _stopRecordingUiTimer();
+      _stopLiveInferenceTimer();
 
       if (_recorder.samples.isEmpty) {
         if (!mounted) return;
@@ -417,6 +697,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
       await _openSaveFlowForCurrentRecording(openedAfterStop: true);
     } catch (e) {
       _stopRecordingUiTimer();
+      _stopLiveInferenceTimer();
       if (!mounted) return;
       setState(() {
         _status = 'Failed to stop recording: $e';
@@ -561,7 +842,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
       _presentFallAlertIfNeeded(summary);
 
       if (!mounted) return;
-      if (summary?.likelyFallDetected != true) {
+      if (!_isCertainFall(summary)) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -1042,31 +1323,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     }
   }
 
-  String _liveActivityLabel() {
-    final samples = _recentSamples(limit: 40);
-    if (samples.length < 10) {
-      return 'Stabilizing';
-    }
-
-    var minMagnitude = double.infinity;
-    var maxMagnitude = 0.0;
-    for (final sample in samples) {
-      final magnitude = math.sqrt(
-        sample.ax * sample.ax + sample.ay * sample.ay + sample.az * sample.az,
-      );
-      minMagnitude = math.min(minMagnitude, magnitude);
-      maxMagnitude = math.max(maxMagnitude, magnitude);
-    }
-
-    final spread = maxMagnitude - minMagnitude;
-    if (spread > 6.0) {
-      return 'Moving';
-    }
-    if (spread > 2.4) {
-      return 'Walking';
-    }
-    return 'Steady';
-  }
+  String? _liveActiveLabel() => _liveActivityLabelLive;
 
   double _resultConfidence(ApiResultSummary result) {
     final fallProbability = result.topFallProbability;
@@ -1860,23 +2117,191 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
         const SizedBox(height: 16),
         if (result == null)
           _buildLatestEmptyCard()
-        else
+        else ...[
           _buildResultCardBody(result),
+          if (_buildNarrativeCard(result) case final narrativeCard?) ...[
+            const SizedBox(height: 12),
+            narrativeCard,
+          ],
+          if (_buildVulnerabilityCard(result) case final vulnCard?) ...[
+            const SizedBox(height: 12),
+            vulnCard,
+          ],
+        ],
       ],
     );
   }
 
+  Widget? _buildNarrativeCard(ApiResultSummary result) {
+    final text = result.narrativeSummary?.summaryText.trim();
+    if (text == null || text.isEmpty) return null;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+      decoration: BoxDecoration(
+        color: _sageMist,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'SESSION NOTES',
+            style: GoogleFonts.interTight(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.0,
+              color: _textTertiary,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            text,
+            style: GoogleFonts.instrumentSerif(
+              fontSize: 19,
+              height: 1.32,
+              letterSpacing: -0.3,
+              color: _sageDeep,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget? _buildVulnerabilityCard(ApiResultSummary result) {
+    final raw = result.rawJson['vulnerability_summary'];
+    if (raw is! Map) return null;
+    if (raw['enabled'] != true) return null;
+
+    final level = (raw['latest_vulnerability_level'] ?? '').toString().toLowerCase();
+    if (level.isEmpty || level == 'none') return null;
+    final scoreRaw = raw['latest_vulnerability_score'];
+    final score = scoreRaw is num ? scoreRaw.toDouble() : null;
+    final reasonsList = raw['top_vulnerability_reasons'];
+    final firstReason = (reasonsList is List && reasonsList.isNotEmpty)
+        ? reasonsList.first.toString()
+        : null;
+
+    final Color tone;
+    switch (level) {
+      case 'high':
+        tone = _danger;
+        break;
+      case 'medium':
+        tone = _warning;
+        break;
+      default:
+        tone = _accent;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _cardBackground,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: _border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: tone.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              level.toUpperCase(),
+              style: GoogleFonts.interTight(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.6,
+                color: tone,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Vulnerability score',
+                  style: GoogleFonts.interTight(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.5,
+                    color: _textTertiary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  firstReason == null
+                      ? 'No additional reason recorded.'
+                      : _titleise(firstReason),
+                  style: GoogleFonts.interTight(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: _textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (score != null)
+            Text(
+              score.toStringAsFixed(2),
+              style: GoogleFonts.jetBrainsMono(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: tone,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _titleise(String value) {
+    final cleaned = value.replaceAll('_', ' ').trim();
+    if (cleaned.isEmpty) return value;
+    return cleaned
+        .split(' ')
+        .map((p) => p.isEmpty ? p : '${p[0].toUpperCase()}${p.substring(1)}')
+        .join(' ');
+  }
+
   Widget _buildResultCardBody(ApiResultSummary result) {
+    final certainFall = _isCertainFall(result);
+    final reviewSuggested = _isReviewSuggested(result);
+    final headline = certainFall
+        ? 'Probable fall detected'
+        : reviewSuggested
+            ? 'Review suggested'
+            : 'No fall detected';
+    final iconColor = certainFall
+        ? _danger
+        : reviewSuggested
+            ? _warning
+            : _sageDeep;
+    final iconData = certainFall
+        ? Icons.priority_high_rounded
+        : reviewSuggested
+            ? Icons.error_outline_rounded
+            : Icons.check_rounded;
+    final subtitle = certainFall
+        ? 'A session needs review.'
+        : reviewSuggested
+            ? 'Possible impact — confirm if needed.'
+            : 'The last session looks steady.';
+
     return _card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _sectionTitle(
-            'Latest result',
-            result.likelyFallDetected
-                ? 'A session needs review.'
-                : 'The last session looks steady.',
-          ),
+          _sectionTitle('Latest result', subtitle),
           InkWell(
             onTap: () {
               setState(() {
@@ -1901,20 +2326,12 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                       color: _sageSoft,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Icon(
-                      result.likelyFallDetected
-                          ? Icons.priority_high_rounded
-                          : Icons.check_rounded,
-                      color: result.likelyFallDetected ? _danger : _sageDeep,
-                      size: 22,
-                    ),
+                    child: Icon(iconData, color: iconColor, size: 22),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      result.likelyFallDetected
-                          ? 'Possible fall detected'
-                          : 'No fall detected',
+                      headline,
                       style: GoogleFonts.interTight(
                         fontSize: 15,
                         fontWeight: FontWeight.w700,
@@ -1992,13 +2409,28 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
 
   Widget _buildVerdictCard(ApiResultSummary result) {
     final confidence = _resultConfidence(result);
-    final verdict = result.likelyFallDetected
-        ? 'Possible fall detected'
-        : 'No fall detected';
-    final body = result.likelyFallDetected
-        ? 'Review suggested with '
-        : 'The session was clear with ';
-    final tone = result.likelyFallDetected ? _danger : _accent;
+    final certainFall = _isCertainFall(result);
+    final reviewSuggested = _isReviewSuggested(result);
+    final verdict = certainFall
+        ? 'Probable fall detected'
+        : reviewSuggested
+            ? 'Review suggested'
+            : 'No fall detected';
+    final body = certainFall
+        ? 'Confirm with the alert if needed — '
+        : reviewSuggested
+            ? 'A possible impact was seen with '
+            : 'The session was clear with ';
+    final tone = certainFall
+        ? _danger
+        : reviewSuggested
+            ? _warning
+            : _accent;
+    final icon = certainFall
+        ? Icons.priority_high_rounded
+        : reviewSuggested
+            ? Icons.error_outline_rounded
+            : Icons.check_rounded;
 
     return Container(
       width: double.infinity,
@@ -2053,9 +2485,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                   ],
                 ),
                 child: Icon(
-                  result.likelyFallDetected
-                      ? Icons.priority_high_rounded
-                      : Icons.check_rounded,
+                  icon,
                   size: 38,
                   color: Colors.white,
                 ),
@@ -2396,7 +2826,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                             Padding(
                               padding: const EdgeInsets.only(top: 30),
                               child: Text(
-                                'Location shared with 2 contacts',
+                                _fallAlertFooterText(),
                                 textAlign: TextAlign.center,
                                 style: GoogleFonts.jetBrainsMono(
                                   fontSize: 11,
@@ -2450,6 +2880,18 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   // ── Caregiver screen (page 08) ─────────────────────────────────────────────
 
   Widget _buildCaregiverScreen() {
+    final summary = _caregiverSummary;
+    final loading = _caregiverLoadState == _LoadState.loading;
+    final activityValue = summary == null
+        ? '—'
+        : _formatActivityHours(summary.activityTodaySeconds);
+    final activityUnit = summary == null
+        ? ''
+        : _formatActivityUnit(summary.activityTodaySeconds);
+    final fallsValue = summary == null
+        ? '—'
+        : summary.fallsThisMonth.toString();
+
     return Scaffold(
       backgroundColor: _pageBackground,
       body: SafeArea(
@@ -2458,38 +2900,47 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
             Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 920),
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 118),
-                  children: [
-                    _buildCaregiverHeader(),
-                    const SizedBox(height: 20),
-                    _buildCaregiverReassuranceCard(),
-                    const SizedBox(height: 16),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: _buildCareStatCard(
-                            label: 'Activity today',
-                            value: '6.2',
-                            unit: 'hrs',
+                child: RefreshIndicator(
+                  onRefresh: () => _loadCaregiverSummary(force: true),
+                  color: _accent,
+                  child: ListView(
+                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 118),
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      _buildCaregiverHeader(),
+                      const SizedBox(height: 20),
+                      _buildCaregiverReassuranceCard(summary, loading: loading),
+                      const SizedBox(height: 16),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: _buildCareStatCard(
+                              label: 'Activity today',
+                              value: activityValue,
+                              unit: activityUnit,
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildCareStatCard(
-                            label: 'Falls this month',
-                            value: '0',
-                            unit: '',
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: _buildCareStatCard(
+                              label: 'Falls this month',
+                              value: fallsValue,
+                              unit: '',
+                            ),
                           ),
-                        ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _buildCaregiverRecentSessionsCard(summary, loading: loading),
+                      if (_caregiverError != null) ...[
+                        const SizedBox(height: 12),
+                        _buildCaregiverErrorRow(_caregiverError!),
                       ],
-                    ),
-                    const SizedBox(height: 16),
-                    _buildCaregiverRecentSessionsCard(),
-                    const SizedBox(height: 16),
-                    _buildCaregiverCallCard(),
-                  ],
+                      const SizedBox(height: 16),
+                      _buildCaregiverCallCard(),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -2564,29 +3015,65 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     );
   }
 
-  Widget _buildCaregiverReassuranceCard() {
+  Widget _buildCaregiverReassuranceCard(
+    _CaregiverSummary? summary, {
+    required bool loading,
+  }) {
+    final hasFallToday = summary != null &&
+        summary.fallsThisMonth > 0 &&
+        summary.daysClearStreak == 0;
+    final tickerText = loading
+        ? 'CHECKING SESSIONS…'
+        : summary == null
+            ? 'NO DATA YET'
+            : hasFallToday
+                ? 'REVIEW SUGGESTED'
+                : 'STEADY · ${summary.daysClearStreak} DAYS CLEAR';
+    final headlineLead = loading
+        ? 'Looking over recent sessions'
+        : summary == null
+            ? 'No sessions to summarise'
+            : hasFallToday
+                ? 'Recent activity needs '
+                : 'Recent activity looks ';
+    final headlineEmphasis = loading
+        ? '…'
+        : summary == null
+            ? '.'
+            : hasFallToday
+                ? 'review.'
+                : 'steady.';
+    final body = summary == null
+        ? 'Record a session to see real activity here.'
+        : summary.lastSessionAt == null
+            ? 'No recent activity recorded yet.'
+            : 'Last session ${_formatRelativeTimeLabel(summary.lastSessionAt!)}. '
+                '${summary.totalSessions} session${summary.totalSessions == 1 ? '' : 's'} in history.';
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: _sageSoft,
+        color: hasFallToday ? const Color(0xFFF6DDD8) : _sageSoft,
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: _accent.withValues(alpha: 0.12)),
+        border: Border.all(
+          color: (hasFallToday ? _danger : _accent).withValues(alpha: 0.12),
+        ),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const _PulseDot(color: _accent),
+              _PulseDot(color: hasFallToday ? _danger : _accent),
               const SizedBox(width: 9),
               Text(
-                'STEADY · 14 DAYS CLEAR',
+                tickerText,
                 style: GoogleFonts.jetBrainsMono(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   letterSpacing: 0.4,
-                  color: _sageDeep,
+                  color: hasFallToday ? _danger : _sageDeep,
                 ),
               ),
             ],
@@ -2596,22 +3083,22 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
             TextSpan(
               children: [
                 TextSpan(
-                  text: 'Margaret is doing ',
+                  text: headlineLead,
                   style: GoogleFonts.instrumentSerif(
                     fontSize: 28,
                     height: 1.08,
                     letterSpacing: -0.5,
-                    color: _sageDeep,
+                    color: hasFallToday ? _danger : _sageDeep,
                   ),
                 ),
                 TextSpan(
-                  text: 'well.',
+                  text: headlineEmphasis,
                   style: GoogleFonts.instrumentSerif(
                     fontSize: 28,
                     height: 1.08,
                     letterSpacing: -0.5,
                     fontStyle: FontStyle.italic,
-                    color: _sageDeep,
+                    color: hasFallToday ? _danger : _sageDeep,
                   ),
                 ),
               ],
@@ -2619,12 +3106,39 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
           ),
           const SizedBox(height: 8),
           Text(
-            'No incidents in the last 2 weeks. Last activity was this morning.',
+            body,
             style: GoogleFonts.interTight(
               fontSize: 14,
               height: 1.45,
               fontWeight: FontWeight.w400,
-              color: _sageDeep.withValues(alpha: 0.72),
+              color: (hasFallToday ? _danger : _sageDeep).withValues(alpha: 0.72),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCaregiverErrorRow(String message) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF6DDD8),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _danger.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off_rounded, color: _danger, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Could not refresh sessions. Pull to retry.\n$message',
+              style: GoogleFonts.interTight(
+                fontSize: 12,
+                height: 1.4,
+                color: _danger,
+              ),
             ),
           ),
         ],
@@ -2702,7 +3216,12 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     );
   }
 
-  Widget _buildCaregiverRecentSessionsCard() {
+  Widget _buildCaregiverRecentSessionsCard(
+    _CaregiverSummary? summary, {
+    required bool loading,
+  }) {
+    final rows = summary?.recentSessions ?? const <_CaregiverRecentSession>[];
+
     return Container(
       decoration: BoxDecoration(
         color: _cardBackground,
@@ -2736,27 +3255,31 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
               ),
             ),
           ),
-          _buildCareSessionRow(
-            icon: Icons.directions_walk,
-            label: 'Morning walk',
-            time: '9:14 AM today',
-            tone: _accent,
-            hasDividerAbove: false,
-          ),
-          _buildCareSessionRow(
-            icon: Icons.hotel,
-            label: 'Evening rest',
-            time: 'Yesterday · 6:30 PM',
-            tone: _textSecondary,
-            hasDividerAbove: true,
-          ),
-          _buildCareSessionRow(
-            icon: Icons.home,
-            label: 'Indoor activity',
-            time: '2 days ago · 11:00 AM',
-            tone: const Color(0xFF6F9BB8),
-            hasDividerAbove: true,
-          ),
+          if (loading && rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(18, 0, 18, 18),
+              child: Text('Loading…'),
+            )
+          else if (rows.isEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+              child: Text(
+                'No sessions on file yet.',
+                style: GoogleFonts.interTight(
+                  fontSize: 13,
+                  color: _textSecondary,
+                ),
+              ),
+            )
+          else
+            for (var i = 0; i < rows.length; i++)
+              _buildCareSessionRow(
+                icon: rows[i].icon,
+                label: rows[i].label,
+                time: rows[i].timeText,
+                tone: rows[i].tone,
+                hasDividerAbove: i > 0,
+              ),
           const SizedBox(height: 4),
         ],
       ),
@@ -3425,17 +3948,53 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
   }
 
   Widget _buildRecordingActivityChips() {
-    final activeLabel = _liveActivityLabel();
-    final labels = <String>['Steady', 'Walking', 'Moving', 'Stabilizing'];
-    return Wrap(
-      alignment: WrapAlignment.center,
-      spacing: 8,
-      runSpacing: 8,
+    final activeLabel = _liveActiveLabel();
+    const labels = <String>['static', 'walking', 'stairs', 'fall'];
+    return Column(
       children: [
-        for (final label in labels)
-          _RecordingActivityChip(label: label, active: label == activeLabel),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final label in labels)
+              _RecordingActivityChip(
+                label: _titleCaseLabel(label),
+                active: label == activeLabel,
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(
+          _liveInferenceCaption(),
+          style: GoogleFonts.jetBrainsMono(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.6,
+            color: _darkInk3,
+          ),
+        ),
       ],
     );
+  }
+
+  String _titleCaseLabel(String value) {
+    if (value.isEmpty) return value;
+    return value[0].toUpperCase() + value.substring(1);
+  }
+
+  String _liveInferenceCaption() {
+    switch (_liveInferenceStatus) {
+      case _LiveInferenceStatus.idle:
+        return 'LIVE · WARMING UP';
+      case _LiveInferenceStatus.inflight:
+        return 'LIVE · ANALYSING';
+      case _LiveInferenceStatus.error:
+        return 'LIVE · OFFLINE';
+      case _LiveInferenceStatus.ok:
+        final prob = _liveFallProbability ?? 0.0;
+        return 'LIVE · FALL PROB ${prob.toStringAsFixed(2)}';
+    }
   }
 
   Widget _buildRecordingScreen() {
@@ -3490,7 +4049,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     }
 
     final result = _result;
-    if (_showFallAlert && result?.likelyFallDetected == true) {
+    if (_showFallAlert && _isCertainFall(result)) {
       return _buildFallAlertScreen();
     }
 
@@ -3499,6 +4058,11 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
     }
 
     if (_selectedSection == 1) {
+      if (_caregiverLoadState == _LoadState.idle) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _loadCaregiverSummary(),
+        );
+      }
       return _buildCaregiverScreen();
     }
 
@@ -4056,6 +4620,42 @@ class _FallCountdownRingPainter extends CustomPainter {
 }
 
 enum _SaveOutcome { none, success, partial, skipped, failed }
+
+enum _LiveInferenceStatus { idle, inflight, ok, error }
+
+enum _LoadState { idle, loading, ready, error }
+
+class _CaregiverRecentSession {
+  const _CaregiverRecentSession({
+    required this.label,
+    required this.timeText,
+    required this.icon,
+    required this.tone,
+  });
+
+  final String label;
+  final String timeText;
+  final IconData icon;
+  final Color tone;
+}
+
+class _CaregiverSummary {
+  const _CaregiverSummary({
+    required this.activityTodaySeconds,
+    required this.fallsThisMonth,
+    required this.daysClearStreak,
+    required this.totalSessions,
+    required this.lastSessionAt,
+    required this.recentSessions,
+  });
+
+  final double activityTodaySeconds;
+  final int fallsThisMonth;
+  final int daysClearStreak;
+  final int totalSessions;
+  final DateTime? lastSessionAt;
+  final List<_CaregiverRecentSession> recentSessions;
+}
 
 class _ActivityBreakdownItem {
   const _ActivityBreakdownItem({
