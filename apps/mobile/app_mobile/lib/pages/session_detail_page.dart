@@ -648,10 +648,29 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     }
   }
 
+  int _effectiveFirstSampleIndex() {
+    final samples = _payload?['samples'] as List?;
+    if (samples == null || samples.length < 3) return 0;
+    final s0 = samples[0];
+    final s1 = samples[1];
+    final s2 = samples[2];
+    if (s0 is! Map || s1 is! Map || s2 is! Map) return 0;
+    final t0 = _asDouble(s0['timestamp']);
+    final t1 = _asDouble(s1['timestamp']);
+    final t2 = _asDouble(s2['timestamp']);
+    if (t0 == null || t1 == null || t2 == null) return 0;
+    if (t0 >= 0.05) return 0;
+    if (t1 - t0 <= 1.0) return 0;
+    if (t2 - t1 >= 0.5) return 0;
+    return 1;
+  }
+
   double? _firstTimestamp() {
     final samples = _payload?['samples'] as List?;
     if (samples == null || samples.isEmpty) return null;
-    final first = samples.first;
+    final idx = _effectiveFirstSampleIndex();
+    if (idx >= samples.length) return null;
+    final first = samples[idx];
     if (first is! Map) return null;
     return _asDouble(first['timestamp']);
   }
@@ -831,6 +850,17 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       return narrativeDuration;
     }
 
+    final fromPayload = _asDouble(_payload?['duration_seconds']);
+    if (fromPayload != null && fromPayload > 0) {
+      return fromPayload;
+    }
+
+    final sampleCount = _asDouble(_payload?['sample_count']);
+    final samplingRate = _samplingRateHz() ?? 50.0;
+    if (sampleCount != null && sampleCount > 0 && samplingRate > 0) {
+      return sampleCount / samplingRate;
+    }
+
     final firstTs = _firstTimestamp();
     final lastTs = _lastTimestamp();
     if (firstTs != null && lastTs != null && lastTs > firstTs) {
@@ -847,15 +877,16 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
     }
 
     final samples = _sessionSamples();
-    if (samples.length < 2) {
+    final startIdx = _effectiveFirstSampleIndex();
+    if (samples.length - startIdx < 2) {
       return null;
     }
 
-    final duration = samples.last.timestamp - samples.first.timestamp;
+    final duration = samples.last.timestamp - samples[startIdx].timestamp;
     if (duration <= 0) {
       return null;
     }
-    return (samples.length - 1) / duration;
+    return (samples.length - startIdx - 1) / duration;
   }
 
   double? _gMax() {
@@ -882,8 +913,9 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
       return 0;
     }
 
+    final startIdx = _effectiveFirstSampleIndex();
     var gaps = 0;
-    for (var i = 1; i < samples.length; i++) {
+    for (var i = startIdx + 1; i < samples.length; i++) {
       final delta = samples[i].timestamp - samples[i - 1].timestamp;
       if (delta > 0.25) {
         gaps++;
@@ -1211,8 +1243,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
   }
 
   Widget _buildSessionInfoCard() {
-    final firstTs = _firstTimestamp();
-    final lastTs = _lastTimestamp();
+    final duration = _sessionDurationSeconds();
 
     return _card(
       child: Column(
@@ -1248,8 +1279,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
                     width: width,
                     child: _metricBox(
                       label: 'Time Range',
-                      value:
-                          '${firstTs?.toStringAsFixed(2) ?? '-'}s → ${lastTs?.toStringAsFixed(2) ?? '-'}s',
+                      value: '0.00s → ${duration.toStringAsFixed(2)}s',
                       icon: Icons.timelapse_rounded,
                     ),
                   ),

@@ -120,10 +120,14 @@ class SensorRecorderService {
     try {
       _gyroSub = gyroscopeEventStream(samplingPeriod: _samplingPeriod).listen(
         (event) {
+          final eventTimestampUtc = event.timestamp.toUtc();
+          if (_isStaleSensorEvent(eventTimestampUtc)) {
+            return;
+          }
           _lastGx = _finiteOrNull(event.x);
           _lastGy = _finiteOrNull(event.y);
           _lastGz = _finiteOrNull(event.z);
-          _lastGyroTimestampUtc = event.timestamp.toUtc();
+          _lastGyroTimestampUtc = eventTimestampUtc;
         },
         onError: (Object error, StackTrace stackTrace) {
           _state = SensorRecorderState.error;
@@ -139,6 +143,9 @@ class SensorRecorderService {
       _accSub = accelStream.listen(
         (reading) {
           final eventTimestampUtc = reading.timestamp.toUtc();
+          if (_isStaleSensorEvent(eventTimestampUtc)) {
+            return;
+          }
           _firstSensorTimestampUtc ??= eventTimestampUtc;
 
           final start = _firstSensorTimestampUtc!;
@@ -297,6 +304,16 @@ class SensorRecorderService {
         timestamp: event.timestamp,
       ),
     );
+  }
+
+  static const Duration _staleEventTolerance = Duration(milliseconds: 100);
+
+  bool _isStaleSensorEvent(DateTime eventTimestampUtc) {
+    final pressStart = _recordingStartedAtUtc;
+    if (pressStart == null) {
+      return false;
+    }
+    return eventTimestampUtc.isBefore(pressStart.subtract(_staleEventTolerance));
   }
 
   double _finiteOrZero(double value) {

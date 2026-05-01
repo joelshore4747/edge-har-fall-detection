@@ -2980,7 +2980,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
               ),
               const SizedBox(height: 2),
               Text(
-                'Mom · Margaret',
+                'Your caregiver',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.instrumentSerif(
@@ -3405,7 +3405,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Call Mom',
+                  'Call caregiver',
                   style: GoogleFonts.instrumentSerif(
                     fontSize: 22,
                     height: 1.08,
@@ -3414,7 +3414,7 @@ class _RuntimeHomePageState extends State<RuntimeHomePage> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Check in with Margaret',
+                  'Check in with your caregiver',
                   style: GoogleFonts.interTight(
                     fontSize: 13,
                     fontWeight: FontWeight.w500,
