@@ -34,6 +34,13 @@ def configure_matplotlib() -> None:
     )
 
 
+def save_figure(fig: plt.Figure, out_path: str | Path, *, dpi: int = 160) -> Path:
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=dpi, bbox_inches="tight")
+    return out
+
+
 def resolve_repo_root(start: str | Path | None = None) -> Path:
     current = Path(start or Path.cwd()).resolve()
     for candidate in (current, *current.parents):
