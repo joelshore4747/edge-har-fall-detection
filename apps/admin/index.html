@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap"
+      />
+    </noscript>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="UniFallMonitor — a phone-grade fall-detection and human-activity-recognition system, evaluated on four public datasets. Dissertation showcase by Joel Shore, 2026."
+    />
+    <meta name="theme-color" content="#22577a" />
+    <meta name="color-scheme" content="light" />
+    <meta property="og:title" content="UniFallMonitor — Sensing the moment before the fall" />
+    <meta
+      property="og:description"
+      content="A phone-grade fall-detection and human-activity-recognition system, evaluated on four public datasets."
+    />
+    <meta property="og:type" content="website" />
+    <title>UniFallMonitor — Fall detection &amp; HAR research</title>
+    <style>
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        background: #ECE7DC;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font: 600 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: #22577a;
+        letter-spacing: 0.02em;
+        z-index: 9999;
+      }
+      #boot-splash::after {
+        content: "";
+        width: 18px;
+        height: 18px;
+        margin-left: 12px;
+        border: 2px solid #22577a;
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: boot-splash-spin 0.8s linear infinite;
+      }
+      @keyframes boot-splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="boot-splash">UniFallMonitor</div>
+    <div id="root"></div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

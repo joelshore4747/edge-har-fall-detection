@@ -1,0 +1,62 @@
+[
+  {
+    "slug": "dataset_inventory",
+    "title": "Dataset Inventory",
+    "purpose": "Compact cross-dataset inventory for admin docs and research-library views.",
+    "recommended_page": "docs or library",
+    "source_files": [
+      "results/validation/dataset_distribution_audit.json"
+    ],
+    "output_path": "apps/admin/public/figures/dataset_inventory.svg"
+  },
+  {
+    "slug": "primary_model_comparison",
+    "title": "Primary Model Comparison",
+    "purpose": "Results-page comparison between the threshold baseline and the vulnerability pipeline.",
+    "recommended_page": "results",
+    "source_files": [
+      "results/reports/primary_comparison.csv"
+    ],
+    "output_path": "apps/admin/public/figures/primary_model_comparison.svg"
+  },
+  {
+    "slug": "har_domain_adaptation_delta",
+    "title": "HAR Domain Adaptation Delta",
+    "purpose": "Dissertation figure showing offline HAR adaptation macro-F1 deltas and paired bootstrap confidence intervals.",
+    "recommended_page": "docs or results",
+    "source_files": [
+      "results/validation/har_domain_adaptation_eval.csv"
+    ],
+    "output_path": "apps/admin/public/figures/har_domain_adaptation_delta.svg"
+  },
+  {
+    "slug": "phone1_runtime_timeline",
+    "title": "Self-Collected Phone-Session Runtime Timeline",
+    "purpose": "Session-detail visual showing HAR confidence and fall probability over time.",
+    "recommended_page": "session detail",
+    "source_files": [
+      "results/validation/phone1_timeline.csv"
+    ],
+    "output_path": "apps/admin/public/figures/phone1_runtime_timeline.svg"
+  },
+  {
+    "slug": "phone1_annotation_alignment",
+    "title": "Self-Collected Phone-Session Annotation Alignment",
+    "purpose": "Evaluation visual for checking how dominant HAR labels align with manual runtime interval annotations.",
+    "recommended_page": "docs or results",
+    "source_files": [
+      "results/validation/phone1_har_interval_comparison.csv"
+    ],
+    "output_path": "apps/admin/public/figures/phone1_annotation_alignment.svg"
+  },
+  {
+    "slug": "phone1_grouped_fall_events",
+    "title": "Self-Collected Phone-Session Grouped Fall Events",
+    "purpose": "Evidence summary showing the highest-probability grouped fall events for admin review.",
+    "recommended_page": "session detail or evidence",
+    "source_files": [
+      "results/validation/phone1_fall_grouped_events.csv"
+    ],
+    "output_path": "apps/admin/public/figures/phone1_grouped_fall_events.svg"
+  }
+]
