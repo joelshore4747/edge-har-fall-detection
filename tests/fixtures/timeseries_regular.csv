@@ -1,0 +1,13 @@
+dataset_name,task_type,subject_id,session_id,timestamp,ax,ay,az,gx,gy,gz,label_raw,label_mapped,placement,sampling_rate_hz,source_file,row_index
+TESTSEQ,har,S1,sessA,0.00,0.00,0.10,9.80,0.01,0.02,0.03,walking,locomotion,waist,50.0,fixture_regular.csv,0
+TESTSEQ,har,S1,sessA,0.02,0.02,0.12,9.79,0.02,0.02,0.03,walking,locomotion,waist,50.0,fixture_regular.csv,1
+TESTSEQ,har,S1,sessA,0.04,0.04,0.14,9.78,0.02,0.03,0.03,walking,locomotion,waist,50.0,fixture_regular.csv,2
+TESTSEQ,har,S1,sessA,0.06,0.06,0.16,9.77,0.03,0.03,0.04,walking,locomotion,waist,50.0,fixture_regular.csv,3
+TESTSEQ,har,S1,sessA,0.08,0.08,0.18,9.76,0.03,0.04,0.04,walking,locomotion,waist,50.0,fixture_regular.csv,4
+TESTSEQ,har,S1,sessA,0.10,0.10,0.20,9.75,0.04,0.04,0.05,walking,locomotion,waist,50.0,fixture_regular.csv,5
+TESTSEQ,har,S1,sessA,0.12,0.12,0.22,9.74,0.04,0.05,0.05,sitting,static,waist,50.0,fixture_regular.csv,6
+TESTSEQ,har,S1,sessA,0.14,0.14,0.24,9.73,0.05,0.05,0.06,sitting,static,waist,50.0,fixture_regular.csv,7
+TESTSEQ,har,S1,sessA,0.16,0.16,0.26,9.72,0.05,0.06,0.06,sitting,static,waist,50.0,fixture_regular.csv,8
+TESTSEQ,har,S1,sessA,0.18,0.18,0.28,9.71,0.06,0.06,0.07,sitting,static,waist,50.0,fixture_regular.csv,9
+TESTSEQ,har,S1,sessA,0.20,0.20,0.30,9.70,0.06,0.07,0.07,sitting,static,waist,50.0,fixture_regular.csv,10
+TESTSEQ,har,S1,sessA,0.22,0.22,0.32,9.69,0.07,0.07,0.08,sitting,static,waist,50.0,fixture_regular.csv,11

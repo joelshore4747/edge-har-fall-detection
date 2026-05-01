@@ -6,6 +6,9 @@ from pipeline.schema import TASK_FALL, TASK_HAR
 
 def test_known_har_label_mappings():
     assert map_har_label("walking") == "locomotion"
+    assert map_har_label("jogging") == "locomotion"
+    assert map_har_label("upstairs") == "stairs"
+    assert map_har_label("downstairs") == "stairs"
     assert map_har_label("WALKING_UPSTAIRS") == "stairs"
     assert map_har_label("laying") == "static"
     assert map_har_label("ironing") == "other"
