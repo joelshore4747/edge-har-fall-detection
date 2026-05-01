@@ -1,0 +1,103 @@
+{
+  "config": {
+    "positive_label": "fall",
+    "negative_label": "non_fall",
+    "feature_columns": [
+      "peak_acc",
+      "peak_over_mean_ratio",
+      "peak_minus_mean",
+      "acc_variance",
+      "mean_acc",
+      "acc_baseline",
+      "jerk_peak",
+      "jerk_mean",
+      "jerk_rms",
+      "gyro_peak",
+      "gyro_mean",
+      "post_impact_motion",
+      "post_impact_variance",
+      "post_impact_dyn_mean",
+      "post_impact_dyn_rms",
+      "post_impact_dyn_ratio_mean",
+      "post_impact_dyn_ratio_rms",
+      "post_impact_motion_to_peak_ratio",
+      "stage_impact_pass",
+      "stage_support_pass",
+      "stage_confirm_pass"
+    ],
+    "probability_threshold": 0.75,
+    "logistic_c": 1.0,
+    "logistic_max_iter": 2000,
+    "class_weight": "balanced",
+    "random_state": 42,
+    "public_train_source": "mobifall",
+    "phone_negatives_only": true,
+    "include_phone_positives": false,
+    "phone_hard_negative_types": [
+      "walking",
+      "stairs",
+      "sit_down_transition",
+      "phone_handling",
+      "sitting",
+      "other"
+    ],
+    "threshold_mode": "shared",
+    "target_rate_hz": 100.0,
+    "window_size": 128,
+    "step_size": 64
+  },
+  "used_features": [
+    "peak_acc",
+    "peak_over_mean_ratio",
+    "peak_minus_mean",
+    "acc_variance",
+    "mean_acc",
+    "acc_baseline",
+    "jerk_peak",
+    "jerk_mean",
+    "jerk_rms",
+    "gyro_peak",
+    "gyro_mean",
+    "post_impact_motion",
+    "post_impact_variance",
+    "post_impact_dyn_mean",
+    "post_impact_dyn_rms",
+    "post_impact_dyn_ratio_mean",
+    "post_impact_dyn_ratio_rms",
+    "post_impact_motion_to_peak_ratio",
+    "stage_impact_pass",
+    "stage_support_pass",
+    "stage_confirm_pass"
+  ],
+  "split": {},
+  "metrics": {
+    "train_rows": 17937,
+    "train_label_counts": {
+      "non_fall": 13894,
+      "fall": 4043
+    },
+    "public_summary": {
+      "source": "mobifall",
+      "mode": "rebuilt_from_raw",
+      "rows": 17677,
+      "label_counts": {
+        "non_fall": 13634,
+        "fall": 4043
+      }
+    },
+    "phone_summary": {
+      "rows_selected": 260,
+      "label_counts": {
+        "non_fall": 260
+      },
+      "hard_negative_type_counts": {
+        "walking": 103,
+        "stairs": 69,
+        "sit_down_transition": 35,
+        "other": 31,
+        "sitting": 16,
+        "phone_handling": 6
+      }
+    }
+  }
+}
