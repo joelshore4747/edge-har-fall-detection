@@ -5,6 +5,7 @@ __pycache__/
 *.log
 *.zip
 *.md
+*.ipynb
 *.drawio
 .DS_Store
 .pytest_cache/
@@ -41,6 +42,7 @@ data/unifallmonitor_sessions/
 !/results/.gitkeep
 
 diagrams/figure_exports/
+analysis/generate_visualisation_notebooks.py
 
 artifacts/feedback/*
 !artifacts/feedback/.gitkeep
