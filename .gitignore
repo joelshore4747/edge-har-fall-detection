@@ -1,26 +1,65 @@
-# Python
-.venv/
 __pycache__/
-.pytest_cache/
 *.pyc
-
-# IDE
+*.pyo
+*.swp
+*.log
+*.zip
+*.md
+*.drawio
+.DS_Store
+.pytest_cache/
+.venv/
 .idea/
 .vscode/
+.clau[d]e/
+.clu[a]de/
+.co[d]ex/
+.cursor/
 
-# OS
-.DS_Store
+.env
+.env.*
+!.env.example
+!.env.compose.example
 
-# Ignore generated/raw data contents
-data/raw/*
-data/processed/*
+node_modules/
+dist/
+dist-ssr/
 
-# Keep folder structure
-!data/raw/.gitkeep
-!data/processed/.gitkeep
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+coverage/
+*.iml
 
-artifacts/**/*.joblib
-artifacts/**/test_predictions.csv
-artifacts/feedback/*.jsonl
+data/raw/
+data/processed/
+data/unifallmonitor_sessions/
 
-results/
+/results/
+!/results/.gitkeep
+
+diagrams/figure_exports/
+
+artifacts/feedback/*
+!artifacts/feedback/.gitkeep
+artifacts/runtime_sessions/*
+!artifacts/runtime_sessions/.gitkeep
+artifacts/runtime_sessions_pulled/
+artifacts/phone_training/
+artifacts/unifallmonitor/
+artifacts/fall/candidates/
+artifacts/fall/current/
+artifacts/fall/archive/
+artifacts/fall/*/test_predictions.csv
+artifacts/har/candidates/
+artifacts/har/current/
+artifacts/har/archive/
+artifacts/har/movement_v2/
+artifacts/har/pamap2_shared_rf_balanced*/
+artifacts/fall_detector*.joblib
+
+logs/
+
+apps/mobile/app_mobile/Fall Monitor Bundled.html
