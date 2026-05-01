@@ -10,10 +10,10 @@ from pipeline.schema import COMMON_SCHEMA_COLUMNS, TASK_FALL, TASK_HAR
 from pipeline.validation import validate_ingestion_dataframe
 
 _HAR_EXACT_MAP: Dict[str, str] = {
-    "walking": "walking",
-    "walk": "walking",
-    "jogging": "walking",
-    "running": "walking",
+    "walking": "locomotion",
+    "walk": "locomotion",
+    "jogging": "locomotion",
+    "running": "locomotion",
 
     "sitting": "static",
     "standing": "static",
@@ -25,6 +25,8 @@ _HAR_EXACT_MAP: Dict[str, str] = {
     "descending_stairs": "stairs",
     "walking_upstairs": "stairs",
     "walking_downstairs": "stairs",
+    "upstairs": "stairs",
+    "downstairs": "stairs",
     "stairs_up": "stairs",
     "stairs_down": "stairs",
 
@@ -117,7 +119,7 @@ def map_har_label(raw_label: object, *, unknown_strategy: str = "other") -> str:
         return "stairs"
 
     if any(k in token for k in ["walk", "run", "jog"]):
-        return "walking"
+        return "locomotion"
 
     if any(k in token for k in ["sit", "stand", "lay", "lie", "lying"]):
         return "static"
