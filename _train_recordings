@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Pull every session from api.unifallmonitor.com, retrain the local
+# HAR/placement classifier, and run the LOSO experiments. Mirrors the
+# `_update_server` style: source .env, fail fast, print a tight summary.
+#
+# This script intentionally does NOT touch the production runtime artifacts
+# under artifacts/har/ or artifacts/fall/ — i.e. it does not change anything
+# the phone is using. Outputs go to artifacts/unifallmonitor/ only.
+#
+# Common overrides:
+#   REFRESH=true ./_train_recordings        # ignore cache, re-download every session
+#   BASE_URL=http://127.0.0.1:8000 ./_train_recordings
+#   UNIFALL_USERNAME=joel UNIFALL_PASSWORD=... ./_train_recordings
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+ENV_FILE="${ENV_FILE:-.env}"
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+USERNAME="${UNIFALL_USERNAME:-${ADMIN_USERNAME:-}}"
+PASSWORD="${UNIFALL_PASSWORD:-${ADMIN_PASSWORD:-}}"
+if [[ -z "$USERNAME" || -z "$PASSWORD" ]]; then
+  echo "ERROR: ADMIN_USERNAME / ADMIN_PASSWORD (or UNIFALL_USERNAME / UNIFALL_PASSWORD) must be set." >&2
+  echo "       Edit $ENV_FILE or export them in the shell before running." >&2
+  exit 1
+fi
+
+BASE_URL="${UNIFALL_BASE_URL:-${BASE_URL:-https://api.unifallmonitor.com}}"
+export UNIFALL_BASE_URL="$BASE_URL"
+CACHE_DIR="${UNIFALL_CACHE_DIR:-$ROOT_DIR/artifacts/unifallmonitor/cache}"
+export UNIFALL_CACHE_DIR="$CACHE_DIR"
+RUNS_ROOT="${UNIFALL_RUNS_ROOT:-$ROOT_DIR/artifacts/unifallmonitor/runs}"
+export UNIFALL_RUNS_ROOT="$RUNS_ROOT"
+# OUT_DIR is intentionally left unset on the trainer side — the trainer
+# now mints a run-id-scoped directory under runs/ when --out is omitted.
+# Downstream consumers read from runs/current/.
+
+DEFAULT_PYTHON="$ROOT_DIR/.venv/bin/python"
+PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON}"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python"
+fi
+
+echo "[_train_recordings] base_url=$BASE_URL"
+echo "[_train_recordings] username=$USERNAME"
+echo "[_train_recordings] cache_dir=$CACHE_DIR"
+echo "[_train_recordings] runs_root=$RUNS_ROOT"
+
+# 1. Health check first — fail fast if the API is not reachable.
+HEALTH_URL="${BASE_URL%/}/health"
+echo "+ curl -fsS $HEALTH_URL"
+if ! curl -fsS "$HEALTH_URL" >/dev/null; then
+  echo "ERROR: health check at $HEALTH_URL failed. Is the API up?" >&2
+  exit 1
+fi
+echo "Health check passed."
+
+# 2. Train (which also pulls + caches every session via /v1/sessions/*).
+TRAIN_ARGS=()
+case "${REFRESH:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    TRAIN_ARGS+=(--refresh-cache)
+    ;;
+esac
+# Forward any extra flags the user passes to this script (e.g. --max-sessions).
+TRAIN_ARGS+=("$@")
+
+# Always update the `current` symlink so downstream consumers point at
+# this run. Pass --calibrate isotonic by default; the trainer respects the
+# user's --calibrate override if they passed one in $@.
+TRAIN_ARGS+=(--mark-current)
+
+echo "+ ./scripts/run_train_unifallmonitor_har.sh ${TRAIN_ARGS[*]:-}"
+"$ROOT_DIR/scripts/run_train_unifallmonitor_har.sh" "${TRAIN_ARGS[@]}"
+
+# 3. Run the LOSO experiments suite (placement, fall-event detection,
+#    5-class activity, and the synthetic placement-transition probe).
+#    Outputs land under runs/current/experiments/, colocated with the
+#    matching trained model.
+echo "+ $PYTHON_BIN scripts/experiments_unifallmonitor.py --smoothing rolling_mean"
+"$PYTHON_BIN" "$ROOT_DIR/scripts/experiments_unifallmonitor.py" \
+    --smoothing rolling_mean \
+    --smoothing-window 5 \
+    --pocket-window-size 200 \
+    --default-window-size 100
+
+# 4. Render figures into runs/current/figures/.
+echo "+ $PYTHON_BIN scripts/render_results_figures.py --run current"
+"$PYTHON_BIN" "$ROOT_DIR/scripts/render_results_figures.py" --run current
+
+# 5. Export the deployable bundle.
+echo "+ $PYTHON_BIN scripts/export_runtime_artifact.py --run current"
+"$PYTHON_BIN" "$ROOT_DIR/scripts/export_runtime_artifact.py" --run current
+
+# 6. One-screen summary of the most useful numbers.
+SUMMARY_PY=$(cat <<'PY'
+import json, os, sys
+from pathlib import Path
+import pandas as pd
+
+root = Path(sys.argv[1])
+runs_root = Path(os.environ.get("UNIFALL_RUNS_ROOT", root / "artifacts/unifallmonitor/runs"))
+current = runs_root.parent / "current"
+out = current.resolve() if current.exists() else runs_root
+exp = out / "experiments"
+cache = Path(os.environ.get("UNIFALL_CACHE_DIR", root / "artifacts/unifallmonitor/cache"))
+
+print()
+print("=== Summary ===")
+meta_path = out / "metadata.json"
+if meta_path.exists():
+    m = json.loads(meta_path.read_text())
+    print(f"Trainer split   : {m.get('split_mode')}")
+    print(f"Trainer accuracy: {m.get('accuracy', 0):.3f}  macro_f1: {m.get('macro_f1', 0):.3f}")
+    print(f"Train rows      : {m.get('train_rows')}    Test rows: {m.get('test_rows')}")
+    print(f"Labels          : {m.get('labels')}")
+
+for label, csv in [
+    ("A. Placement (LOSO)", exp / "A_placement_per_session.csv"),
+    ("C. 5-class activity (LOSO)", exp / "C_activity_5class_per_session.csv"),
+]:
+    if csv.exists():
+        df = pd.read_csv(csv)
+        if not df.empty:
+            acc = df["agree"].mean()
+            print(f"{label}: {df['agree'].sum()}/{len(df)} = {acc:.3f}")
+
+sweep = exp / "B_fall_threshold_sweep.csv"
+if sweep.exists():
+    s = pd.read_csv(sweep)
+    if not s.empty and "f1" in s.columns:
+        valid = s.dropna(subset=["f1"])
+        if "score" in valid.columns:
+            for label, score_filter in (
+                ("B. Fall-event best F1 (raw)", "max_p_fall"),
+                ("B. Fall-event best F1 (smoothed)", "smoothed_max_p_fall"),
+            ):
+                sub = valid[valid["score"] == score_filter]
+                if not sub.empty:
+                    best = sub.sort_values("f1", ascending=False).iloc[0]
+                    print(
+                        f"{label} = {best['f1']:.3f} at threshold={best['threshold']} "
+                        f"(recall={best['recall']:.2f}, precision={best['precision']:.2f})"
+                    )
+        else:
+            best = valid.sort_values("f1", ascending=False).iloc[0]
+            print(
+                f"B. Fall-event best F1 = {best['f1']:.3f} at threshold={best['threshold']} "
+                f"(recall={best['recall']:.2f}, precision={best['precision']:.2f})"
+            )
+
+td = exp / "D_placement_transition.csv"
+if td.exists():
+    t = pd.read_csv(td)
+    if not t.empty:
+        agree = (t["pred"] == t["true_placement"]).mean()
+        print(f"D. Placement transition probe: {agree:.1%} of stitched windows correct")
+
+print(f"\nArtifacts:")
+print(f"  trained model + reports: {out}")
+print(f"  LOSO experiments       : {exp}")
+print(f"  figures                : {out / 'figures'}")
+print(f"  deployable bundle      : artifacts/unifallmonitor/deployable/runtime_v1.joblib")
+print(f"  raw session cache      : {cache}")
+print()
+print("Reminder: this run does NOT change the model the phone is using.")
+print("Production artifacts under artifacts/har/ and artifacts/fall/ are untouched.")
+PY
+)
+"$PYTHON_BIN" -c "$SUMMARY_PY" "$ROOT_DIR"
