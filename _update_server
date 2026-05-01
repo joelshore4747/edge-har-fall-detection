@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Full server refresh:
+# 1. optionally pull the latest git changes
+# 2. ensure the Compose env file exists
+# 3. rebuild and restart the stack
+# 4. optionally create/update the admin account
+# 5. check health and show recent logs
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+ENV_FILE="${ENV_FILE:-.env.compose}"
+AUTO_PULL="${AUTO_PULL:-true}"
+BOOTSTRAP_ADMIN="${BOOTSTRAP_ADMIN:-auto}"
+DOMAIN="${DOMAIN:-www.unifallmonitor.com}"
+
+if [[ "$AUTO_PULL" =~ ^(1|true|TRUE|yes|YES|on|ON)$ && -d .git ]]; then
+  echo "+ git pull --ff-only"
+  git pull --ff-only
+fi
+
+if [[ ! -f "$ENV_FILE" && "$ENV_FILE" == ".env.compose" && -f ".env.compose.example" ]]; then
+  cp .env.compose.example .env.compose
+  cat >&2 <<'MSG'
+Created .env.compose from .env.compose.example.
+Edit .env.compose now, set real POSTGRES_PASSWORD, ADMIN_SESSION_SECRET, and ADMIN_PASSWORD, then rerun ./_update_server.
+MSG
+  exit 1
+fi
+
+if [[ ! -f "$ENV_FILE" && -f ".env" ]]; then
+  ENV_FILE=".env"
+fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "ERROR: env file not found. Expected .env.compose or .env" >&2
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+
+warn_if_placeholder() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -z "$value" || "$value" == change-this* || "$value" == postgres ]]; then
+    echo "WARNING: $name is empty or still using a placeholder value." >&2
+  fi
+}
+
+fail_if_unset_or_placeholder() {
+  local name="$1"
+  local value="${!name:-}"
+  if [[ -z "$value" || "$value" == change-this* || "$value" == unifallmonitor-dev-session-secret-change-me ]]; then
+    echo "ERROR: $name is unset or still using the documented placeholder." >&2
+    echo "       The API now refuses to start without a real value here." >&2
+    echo "       Edit $ENV_FILE and set $name to a long random string." >&2
+    exit 1
+  fi
+}
+
+# ADMIN_SESSION_SECRET is now load-bearing: the API container will refuse
+# to start if it is unset or equal to the documented dev placeholder.
+fail_if_unset_or_placeholder ADMIN_SESSION_SECRET
+
+warn_if_placeholder POSTGRES_PASSWORD
+warn_if_placeholder ADMIN_PASSWORD
+
+# Container runs as UID 10001:10001 (see Dockerfile). Host bind-mount
+# directories must be writable by that UID or the API will fail to write
+# session JSON, feedback, and logs.
+APP_UID="${APP_UID:-10001}"
+APP_GID="${APP_GID:-10001}"
+
+ensure_bind_mount_writable() {
+  local host_path="$1"
+  if [[ ! -d "$host_path" ]]; then
+    mkdir -p "$host_path"
+  fi
+  local owner_uid
+  owner_uid="$(stat -c '%u' "$host_path")"
+  if [[ "$owner_uid" != "$APP_UID" ]]; then
+    cat >&2 <<MSG
+ERROR: $host_path is owned by UID $owner_uid, but the API container now
+       runs as UID $APP_UID. The container will not be able to write here.
+
+       Run this once on the server, then rerun ./_update_server:
+
+         sudo chown -R $APP_UID:$APP_GID $host_path
+MSG
+    exit 1
+  fi
+}
+
+ensure_bind_mount_writable ./artifacts/runtime_sessions
+ensure_bind_mount_writable ./artifacts/feedback
+ensure_bind_mount_writable ./logs
+
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE=(docker compose --env-file "$ENV_FILE")
+elif sudo docker compose version >/dev/null 2>&1; then
+  COMPOSE=(sudo docker compose --env-file "$ENV_FILE")
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE=(docker-compose --env-file "$ENV_FILE")
+elif command -v sudo >/dev/null 2>&1 && sudo docker-compose version >/dev/null 2>&1; then
+  COMPOSE=(sudo docker-compose --env-file "$ENV_FILE")
+else
+  echo "ERROR: Docker Compose is not installed." >&2
+  exit 1
+fi
+
+echo "Using env file: $ENV_FILE"
+API_WORKERS="${API_WORKERS:-1}"
+echo "Configured API workers: $API_WORKERS"
+
+echo "+ ${COMPOSE[*]} down"
+"${COMPOSE[@]}" down
+
+echo "+ ${COMPOSE[*]} up -d --build"
+"${COMPOSE[@]}" up -d --build
+
+should_bootstrap_admin=false
+case "$BOOTSTRAP_ADMIN" in
+  1|true|TRUE|yes|YES|on|ON)
+    should_bootstrap_admin=true
+    ;;
+  auto)
+    if [[ -n "${ADMIN_PASSWORD:-}" && "${ADMIN_PASSWORD:-}" != change-this* ]]; then
+      should_bootstrap_admin=true
+    fi
+    ;;
+esac
+
+if [[ "$should_bootstrap_admin" == true ]]; then
+  echo "+ ${COMPOSE[*]} --profile bootstrap up admin-bootstrap"
+  "${COMPOSE[@]}" --profile bootstrap up admin-bootstrap
+else
+  echo "Skipping admin bootstrap. Set BOOTSTRAP_ADMIN=true and ADMIN_PASSWORD in $ENV_FILE to force it."
+fi
+
+echo "+ ${COMPOSE[*]} ps"
+"${COMPOSE[@]}" ps
+
+API_PORT="${API_PORT:-8000}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:${API_PORT}/health}"
+echo "+ health check: $HEALTH_URL"
+for attempt in $(seq 1 30); do
+  if curl -fsS "$HEALTH_URL" >/dev/null; then
+    echo "Health check passed."
+    break
+  fi
+  if [[ "$attempt" == "30" ]]; then
+    echo "ERROR: health check failed after 30 attempts." >&2
+    "${COMPOSE[@]}" logs --tail=100 api >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
+
+echo "+ ${COMPOSE[*]} logs --tail=50 api"
+"${COMPOSE[@]}" logs --tail=50 api
+
+cat <<MSG
+Server update complete.
+
+Admin app should be available after nginx is pointed at the API:
+  https://$DOMAIN/
+
+API docs:
+  https://$DOMAIN/api/docs
+
+If you changed /etc/nginx/sites-available/server_fall_detection, reload nginx separately:
+  sudo nginx -t
+  sudo systemctl reload nginx
+MSG

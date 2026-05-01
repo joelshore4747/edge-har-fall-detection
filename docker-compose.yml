@@ -1,0 +1,124 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    ports: ["127.0.0.1:5432:5432"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vulnerability_dissertation}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-vulnerability_dissertation}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    image: vulnerability-dissertation-api:latest
+    working_dir: /app
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-vulnerability_dissertation}
+    command: ["python", "scripts/db_init.py"]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_DEMO_MODE: ${VITE_DEMO_MODE:-false}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    image: vulnerability-dissertation-api:latest
+    working_dir: /app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-vulnerability_dissertation}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      HAR_ARTIFACT_PATH: ${HAR_ARTIFACT_PATH:-/app/artifacts/har/runtime_v1.joblib}
+      FALL_ARTIFACT_PATH: ${FALL_ARTIFACT_PATH:-/app/artifacts/fall/fall_meta_phone_negatives_v2/model.joblib}
+      FEEDBACK_STORE_PATH: ${FEEDBACK_STORE_PATH:-/app/artifacts/feedback/prediction_feedback.jsonl}
+      SESSION_STORAGE_DIR: ${SESSION_STORAGE_DIR:-/app/artifacts/runtime_sessions}
+      ADMIN_WEB_ENABLED: ${ADMIN_WEB_ENABLED:-true}
+      ADMIN_WEB_DIST_PATH: ${ADMIN_WEB_DIST_PATH:-/app/apps/admin/dist}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_FILE_PATH: ${LOG_FILE_PATH:-/app/logs/runtime_api.log}
+      LOG_FAILURE_FILE_PATH: ${LOG_FAILURE_FILE_PATH:-/app/logs/runtime_api_failures.log}
+      LOG_MAX_BYTES: ${LOG_MAX_BYTES:-10485760}
+      LOG_BACKUP_COUNT: ${LOG_BACKUP_COUNT:-5}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      SELF_SERVICE_REGISTRATION_ENABLED: ${SELF_SERVICE_REGISTRATION_ENABLED:-false}
+      RATE_LIMIT_REGISTRATION_PER_MINUTE: ${RATE_LIMIT_REGISTRATION_PER_MINUTE:-5}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
+      ADMIN_SESSION_COOKIE_NAME: ${ADMIN_SESSION_COOKIE_NAME:-unifallmonitor_admin_session}
+      ADMIN_SESSION_MAX_AGE_SECONDS: ${ADMIN_SESSION_MAX_AGE_SECONDS:-43200}
+      ADMIN_SESSION_SAME_SITE: ${ADMIN_SESSION_SAME_SITE:-lax}
+      ADMIN_SESSION_HTTPS_ONLY: ${ADMIN_SESSION_HTTPS_ONLY:-true}
+      ADMIN_CSRF_COOKIE_NAME: ${ADMIN_CSRF_COOKIE_NAME:-unifallmonitor_csrf}
+      UVICORN_ACCESS_LOG: ${UVICORN_ACCESS_LOG:-false}
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      API_WORKERS: ${API_WORKERS:-1}
+    volumes:
+      - ./artifacts/runtime_sessions:/app/artifacts/runtime_sessions
+      - ./artifacts/feedback:/app/artifacts/feedback
+      - ./logs:/app/logs
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    command: ["./scripts/run_api.sh"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/livez').read()\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  admin-bootstrap:
+    image: vulnerability-dissertation-api:latest
+    working_dir: /app
+    profiles: ["bootstrap"]
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-vulnerability_dissertation}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    command:
+      [
+        "sh",
+        "-c",
+        ": \"$${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env.compose before running the bootstrap profile}\" && python scripts/create_auth_account.py --username \"$${ADMIN_USERNAME}\" --password \"$${ADMIN_PASSWORD}\" --role admin",
+      ]
+
+volumes:
+  postgres_data:
